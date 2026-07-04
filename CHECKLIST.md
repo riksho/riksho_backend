@@ -36,6 +36,7 @@
 
 ### Phase 3: API Modules
 - [x] `modules/auth/auth.routes.ts` — GET /me, PUT /me
+- [x] **New Auth Integration:** Migrated both Customer and Driver apps from Email/Password to strict Phone OTP authentication (`signInWithOtp`, `verifyOtp`).
 - [x] `modules/drivers/drivers.routes.ts` — online/offline, location, earnings, profile, register
 - [x] `modules/rides/rides.routes.ts` — Full ride state machine (request → accept → arrived → start → complete → cancel)
 - [x] `modules/fares/fares.config.ts` — Fare engine (base + per_km + per_min + surge + minimum)
@@ -55,18 +56,18 @@
 ## ⏳ Pending
 
 ### Database Deployment
-- [ ] Run `migrations/001_initial_schema.sql` in Supabase SQL Editor
-- [ ] Verify all tables created with `SELECT * FROM information_schema.tables WHERE table_schema = 'public'`
-- [ ] Configure SMS provider (Twilio/MessageBird) in Supabase Auth for phone OTP
+- [x] Run `migrations/001_initial_schema.sql` in Supabase SQL Editor
+- [x] Verify all tables created with `SELECT * FROM information_schema.tables WHERE table_schema = 'public'`
+- [x] Configure SMS provider (Twilio/MessageBird) in Supabase Auth for phone OTP
 
 ### Build Verification
-- [ ] `npm run build` passes TypeScript compilation
+- [x] `npm run build` passes TypeScript compilation
 - [ ] `npm run dev` starts server, `/health` returns 200
 
 ### Future Work
 - [x] Create `riksho_partner_android/` (driver app) — Copied customer app skeleton and updated config
-- [ ] Wire customer app auth to Supabase (replace Clerk)
-- [ ] Wire customer app API calls to backend
-- [ ] Build out driver app screens (earnings, map, online toggle)
+- [x] Wire customer app auth to Supabase (replace Clerk)
+- [x] Wire customer app API calls to backend
+- [x] Build out driver app screens (earnings, map, online toggle)
 - [ ] Stripe integration for online payments
 - [ ] Expo push notification sender service
