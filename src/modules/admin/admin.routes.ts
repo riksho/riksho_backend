@@ -10,11 +10,11 @@ const ReasonSchema = z.object({ reason: z.string().min(1) });
 export async function adminRoutes(app: FastifyInstance) {
   const guard = { preHandler: [authGuard, requireRole("admin")] };
 
-  app.get("/admin/me", guard, async (req) => ({
+  app.get("/me", guard, async (req) => ({
     id: req.user!.id, email: req.user!.email, role: "admin",
   }));
 
-  app.get("/admin/stats", guard, async () => {
+  app.get("/stats", guard, async () => {
     const today = new Date(); 
     today.setHours(0,0,0,0);
     const iso = today.toISOString();
@@ -34,7 +34,7 @@ export async function adminRoutes(app: FastifyInstance) {
     };
   });
 
-  app.get("/admin/drivers", guard, async (req) => {
+  app.get("/drivers", guard, async (req) => {
     const { status = "pending", q, page = "0" } = req.query as any;
     let query = supabaseAdmin
       .from("drivers")
@@ -52,7 +52,7 @@ export async function adminRoutes(app: FastifyInstance) {
     return data ?? [];
   });
 
-  app.get("/admin/drivers/:id", guard, async (req, reply) => {
+  app.get("/drivers/:id", guard, async (req, reply) => {
     const { id } = req.params as { id: string };
     const { data, error } = await supabaseAdmin
       .from("drivers").select("*, vehicles(*)").eq("id", id).single();
@@ -83,20 +83,20 @@ export async function adminRoutes(app: FastifyInstance) {
     logger.info({ id, status, adminId }, "Admin changed driver verification");
   };
 
-  app.post("/admin/drivers/:id/approve", guard, async (req) => {
+  app.post("/drivers/:id/approve", guard, async (req) => {
     const { id } = req.params as { id: string };
     await setStatus(id, true, "approved", req.user!.id);
     return { ok: true, verification_status: "approved" };
   });
 
-  app.post("/admin/drivers/:id/reject", guard, async (req) => {
+  app.post("/drivers/:id/reject", guard, async (req) => {
     const { id } = req.params as { id: string };
     const { reason } = ReasonSchema.parse(req.body);
     await setStatus(id, false, "rejected", req.user!.id, reason);
     return { ok: true, verification_status: "rejected" };
   });
 
-  app.post("/admin/drivers/:id/suspend", guard, async (req) => {
+  app.post("/drivers/:id/suspend", guard, async (req) => {
     const { id } = req.params as { id: string };
     const { reason } = ReasonSchema.parse(req.body);
     await setStatus(id, false, "suspended", req.user!.id, reason);
