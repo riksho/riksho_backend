@@ -1,6 +1,6 @@
-# AngaZap Backend
+# Riksho Backend
 
-> Shared backend for the AngaZap customer and driver (partner) apps. Built with **Fastify + TypeScript**, powered by **Supabase** (Postgres + Auth + Realtime).
+> Shared backend for the Riksho customer and driver (partner) apps. Built with **Fastify + TypeScript**, powered by **Supabase** (Postgres + Auth + Realtime).
 
 ## Quick Start
 
@@ -24,7 +24,7 @@ curl http://localhost:3001/health
 ## Project Structure
 
 ```
-angazap_backend/
+riksho_backend/
 ├── src/
 │   ├── index.ts                  # Fastify server entry
 │   ├── config/
@@ -90,6 +90,6 @@ All endpoints (except `/health`) require `Authorization: Bearer <supabase-jwt>`.
 
 ## Brand
 
-- **Company:** AngaZap Technologies Pvt. Ltd.
+- **Company:** Riksho Technologies Pvt. Ltd.
 - **Tagline:** One app for everything that moves
 - **Description:** Cabs, bike taxis, intercity rides, and on-demand business fleets — fair fares, verified drivers, live tracking.
