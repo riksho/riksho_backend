@@ -1,4 +1,4 @@
-# AngaZap Backend
+# Riksho Backend
 
 > Shared backend for the AngaZap customer and driver (partner) apps. Built with **Fastify + TypeScript**, powered by **Supabase** (Postgres + Auth + Realtime).
 
