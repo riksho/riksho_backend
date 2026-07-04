@@ -1,12 +1,12 @@
-# AngaZap Backend — Build Checklist
+# Riksho Backend — Build Checklist
 
 > Living document tracking everything that has been built, configured, and verified.
 
 ## ✅ Completed
 
 ### Phase 0: Setup & Configuration
-- [x] Read existing `angazap_android/.env` and `app.json` — audited Clerk/Neon setup
-- [x] Created `angazap_backend/` project skeleton
+- [x] Read existing `riksho_android/.env` and `app.json` — audited Clerk/Neon setup
+- [x] Created `riksho_backend/` project skeleton
 - [x] Created `.env` with all Supabase credentials (anon key, service role key, publishable key, secret key)
 - [x] Created `package.json` with Fastify, Supabase JS, Zod, Pino, TypeScript
 - [x] Created `tsconfig.json` (ES2022, NodeNext module resolution)
@@ -45,8 +45,8 @@
 - [x] `modules/notifications/push.routes.ts` — POST /push/register
 
 ### Phase 4: App Updates
-- [x] Updated `angazap_android/app.json` — name: AngaZap, slug: angazap, scheme: angazap, colors: #4338CA, packages: com.angazap.customer
-- [x] Updated `angazap_android/.env` — replaced Clerk with Supabase, removed secrets (moved to backend)
+- [x] Updated `riksho_android/app.json` — name: Riksho, slug: riksho, scheme: riksho, colors: #4338CA, packages: com.riksho.customer
+- [x] Updated `riksho_android/.env` — replaced Clerk with Supabase, removed secrets (moved to backend)
 
 ### Phase 5: Documentation
 - [x] Created `README.md` with setup instructions + full API reference
@@ -64,7 +64,7 @@
 - [ ] `npm run dev` starts server, `/health` returns 200
 
 ### Future Work
-- [x] Create `angazap_partner_android/` (driver app) — Copied customer app skeleton and updated config
+- [x] Create `riksho_partner_android/` (driver app) — Copied customer app skeleton and updated config
 - [ ] Wire customer app auth to Supabase (replace Clerk)
 - [ ] Wire customer app API calls to backend
 - [ ] Build out driver app screens (earnings, map, online toggle)
