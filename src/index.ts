@@ -14,6 +14,7 @@ import { faresRoutes } from "./modules/fares/fares.routes.js";
 import { ridesRoutes } from "./modules/rides/rides.routes.js";
 import { ratingsRoutes } from "./modules/ratings/ratings.routes.js";
 import { pushRoutes } from "./modules/notifications/push.routes.js";
+import { adminRoutes } from "./modules/admin/admin.routes.js";
 
 const app = Fastify({
   logger: false, // We use our own pino logger
@@ -86,6 +87,7 @@ await app.register(faresRoutes);
 await app.register(ridesRoutes);
 await app.register(ratingsRoutes);
 await app.register(pushRoutes);
+await app.register(adminRoutes);
 
 // --- Graceful shutdown ---
 const shutdown = async (signal: string) => {
