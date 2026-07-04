@@ -1,5 +1,5 @@
 import type { FastifyRequest, FastifyReply } from "fastify";
-import { supabaseAnon } from "../config/supabase.js";
+import { supabaseAnon, supabaseAdmin } from "../config/supabase.js";
 
 export interface AuthUser {
   id: string;
@@ -40,11 +40,20 @@ export async function authGuard(request: FastifyRequest, reply: FastifyReply) {
       });
     }
 
+    // Server-authoritative role: read from the users table, NOT the JWT
+    // metadata (which is client-influenceable). Falls back to metadata only
+    // if the profile row hasn't been created yet.
+    const { data: profile } = await supabaseAdmin
+      .from("users")
+      .select("role")
+      .eq("id", data.user.id)
+      .single();
+
     request.user = {
       id: data.user.id,
       phone: data.user.phone,
       email: data.user.email,
-      role: data.user.user_metadata?.role || "customer",
+      role: profile?.role || data.user.user_metadata?.role || "customer",
     };
   } catch (err) {
     return reply.status(401).send({

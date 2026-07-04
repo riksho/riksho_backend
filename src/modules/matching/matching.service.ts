@@ -49,9 +49,11 @@ export async function findNearbyDrivers(
 
   const { data: onlineDrivers } = await supabaseAdmin
     .from("drivers")
-    .select("id, name")
+    .select("id, name, vehicles!inner(type)")
     .in("id", driverIds)
     .eq("status", "online")
+    .eq("is_verified", true)
+    .eq("vehicles.type", vehicleType)
     .limit(MAX_DRIVERS);
 
   if (!onlineDrivers?.length) {

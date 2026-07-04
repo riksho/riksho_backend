@@ -168,11 +168,11 @@ export async function driversRoutes(app: FastifyInstance) {
       user_metadata: { role: "driver" },
     });
 
-    // Also set role in users table (server-authoritative)
+    // Also set role in users table (server-authoritative). Upsert so the
+    // role persists even if the customer profile row doesn't exist yet.
     await supabaseAdmin
       .from("users")
-      .update({ role: "driver" })
-      .eq("id", driverId);
+      .upsert({ id: driverId, role: "driver", phone: request.user!.phone }, { onConflict: "id" });
 
     return reply.status(201).send({ success: true, message: "Driver registered. Pending verification." });
   });

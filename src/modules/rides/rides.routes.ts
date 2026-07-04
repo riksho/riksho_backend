@@ -2,6 +2,7 @@ import type { FastifyInstance } from "fastify";
 import { ZodError } from "zod";
 import { authGuard } from "../../common/auth.guard.js";
 import { requireRole } from "../../common/roles.guard.js";
+import { logger } from "../../common/logger.js";
 import { supabaseAdmin } from "../../config/supabase.js";
 import { calculateFare, type VehicleType } from "../fares/fares.config.js";
 import { findNearbyDrivers } from "../matching/matching.service.js";
@@ -347,38 +348,35 @@ export async function ridesRoutes(app: FastifyInstance) {
       return reply.status(500).send({ error: "Failed to complete ride" });
     }
 
-    // Set driver back to online + increment total_trips
-    await supabaseAdmin.rpc("", {}).catch(() => {}); // no-op placeholder
-    await supabaseAdmin
-      .from("drivers")
-      .update({ status: "online" })
-      .eq("id", driverId);
-
-    // Increment total_trips (raw SQL via rpc isn't available, so read-update)
+    // Set driver back to online + increment total_trips (read-update)
     const { data: driverData } = await supabaseAdmin
       .from("drivers")
       .select("total_trips")
       .eq("id", driverId)
       .single();
 
-    if (driverData) {
-      await supabaseAdmin
-        .from("drivers")
-        .update({ total_trips: (driverData.total_trips || 0) + 1 })
-        .eq("id", driverId);
-    }
+    await supabaseAdmin
+      .from("drivers")
+      .update({
+        status: "online",
+        total_trips: (driverData?.total_trips || 0) + 1,
+      })
+      .eq("id", driverId);
 
-    // Create earnings ledger entry
+    // Create earnings ledger entry (graceful — ignore if table missing pre-migration)
     const commission = Math.round(fareFinal * 0.15); // 15% platform fee
     const net = fareFinal - commission;
-    await supabaseAdmin.from("earnings").insert({
+    const { error: earningsError } = await supabaseAdmin.from("earnings").insert({
       ride_id: id,
       driver_id: driverId,
       gross: fareFinal,
       commission,
       net,
       payment_method: body.payment_method || "cash",
-    }).catch(() => {}); // Graceful — table may not exist until migration runs
+    });
+    if (earningsError) {
+      logger.warn({ rideId: id, err: earningsError.message }, "Earnings ledger insert failed (non-fatal)");
+    }
 
     await supabaseAdmin.from("ride_events").insert({
       ride_id: id,
