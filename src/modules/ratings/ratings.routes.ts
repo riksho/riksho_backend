@@ -1,20 +1,13 @@
 import type { FastifyInstance } from "fastify";
 import { authGuard } from "../../common/auth.guard.js";
 import { supabaseAdmin } from "../../config/supabase.js";
+import { RatingSchema } from "../../common/schemas.js";
 
 export async function ratingsRoutes(app: FastifyInstance) {
-  // POST /ratings — Submit a rating
+  // POST /ratings — Submit a rating (Zod-validated, upsert for duplicate guard)
   app.post("/ratings", { preHandler: [authGuard] }, async (request, reply) => {
     const userId = request.user!.id;
-    const body = request.body as {
-      ride_id: string;
-      stars: number;
-      comment?: string;
-    };
-
-    if (!body.ride_id || !body.stars || body.stars < 1 || body.stars > 5) {
-      return reply.status(400).send({ error: "ride_id and stars (1-5) are required" });
-    }
+    const body = RatingSchema.parse(request.body);
 
     // Verify the ride exists and belongs to this user
     const { data: ride } = await supabaseAdmin
@@ -35,44 +28,60 @@ export async function ratingsRoutes(app: FastifyInstance) {
       return reply.status(403).send({ error: "You are not part of this ride" });
     }
 
+    const ratingBy = isCustomer ? "customer" : "driver";
+
+    // Upsert: unique constraint (ride_id, by) from migration prevents duplicates
     const { data, error } = await supabaseAdmin
       .from("ratings")
-      .insert({
-        ride_id: body.ride_id,
-        by: isCustomer ? "customer" : "driver",
-        stars: body.stars,
-        comment: body.comment || null,
-      })
+      .upsert(
+        {
+          ride_id: body.ride_id,
+          by: ratingBy,
+          stars: body.stars,
+          comment: body.comment || null,
+        },
+        { onConflict: "ride_id,by" }
+      )
       .select()
       .single();
 
     if (error) {
-      return reply.status(500).send({ error: "Failed to submit rating", details: error.message });
+      return reply.status(500).send({ error: "Failed to submit rating" });
     }
 
     // Update driver's average rating if rated by customer
+    // Uses the recompute_driver_rating RPC from migration 002
     if (isCustomer && ride.driver_id) {
-      const { data: allRatings } = await supabaseAdmin
-        .from("ratings")
-        .select("stars")
-        .eq("ride_id", body.ride_id);
-
-      // Simple average for now
-      if (allRatings?.length) {
-        const { data: driverRatings } = await supabaseAdmin
-          .from("ratings")
-          .select("stars, rides!inner(driver_id)")
-          .eq("by", "customer");
-
-        // Update driver rating (simplified)
-        const avg = allRatings.reduce((s, r) => s + r.stars, 0) / allRatings.length;
-        await supabaseAdmin
-          .from("drivers")
-          .update({ rating: +avg.toFixed(2) })
-          .eq("id", ride.driver_id);
-      }
+      await supabaseAdmin
+        .rpc("recompute_driver_rating", { p_driver_id: ride.driver_id })
+        .then(({ error: rpcErr }) => {
+          if (rpcErr) {
+            // Fallback: manual average if RPC doesn't exist yet
+            return manualRecomputeRating(ride.driver_id!);
+          }
+        });
     }
 
     return reply.status(201).send(data);
   });
+}
+
+/**
+ * Fallback rating recompute if the RPC isn't available yet.
+ * Correctly averages ALL customer ratings across ALL the driver's rides.
+ */
+async function manualRecomputeRating(driverId: string) {
+  const { data: allRatings } = await supabaseAdmin
+    .from("ratings")
+    .select("stars, rides!inner(driver_id)")
+    .eq("by", "customer")
+    .eq("rides.driver_id", driverId);
+
+  if (allRatings?.length) {
+    const avg = allRatings.reduce((s, r) => s + r.stars, 0) / allRatings.length;
+    await supabaseAdmin
+      .from("drivers")
+      .update({ rating: +avg.toFixed(2) })
+      .eq("id", driverId);
+  }
 }

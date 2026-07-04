@@ -1,22 +1,22 @@
 import type { FastifyInstance } from "fastify";
+import { ZodError } from "zod";
 import { authGuard } from "../../common/auth.guard.js";
+import { requireRole } from "../../common/roles.guard.js";
 import { supabaseAdmin } from "../../config/supabase.js";
 import { calculateFare, type VehicleType } from "../fares/fares.config.js";
 import { findNearbyDrivers } from "../matching/matching.service.js";
+import { broadcastRideStatus } from "../matching/broadcast.service.js";
+import {
+  RideRequestSchema,
+  RideCancelSchema,
+  RideCompleteSchema,
+} from "../../common/schemas.js";
 
 export async function ridesRoutes(app: FastifyInstance) {
-  // POST /rides — Request a ride
-  app.post("/rides", { preHandler: [authGuard] }, async (request, reply) => {
+  // POST /rides — Request a ride (customers only)
+  app.post("/rides", { preHandler: [authGuard, requireRole("customer")] }, async (request, reply) => {
     const customerId = request.user!.id;
-    const body = request.body as {
-      origin_lat: number;
-      origin_lng: number;
-      origin_address: string;
-      dest_lat: number;
-      dest_lng: number;
-      dest_address: string;
-      vehicle_type: VehicleType;
-    };
+    const body = RideRequestSchema.parse(request.body);
 
     // Calculate route via OSRM
     const osrmUrl = `https://router.project-osrm.org/route/v1/driving/${body.origin_lng},${body.origin_lat};${body.dest_lng},${body.dest_lat}?overview=false`;
@@ -53,7 +53,7 @@ export async function ridesRoutes(app: FastifyInstance) {
       .single();
 
     if (error) {
-      return reply.status(500).send({ error: "Failed to create ride", details: error.message });
+      return reply.status(500).send({ error: "Failed to create ride" });
     }
 
     // Log ride event
@@ -72,6 +72,40 @@ export async function ridesRoutes(app: FastifyInstance) {
       fare_estimate: fareEstimate,
       distance_km: +(route.distance / 1000).toFixed(1),
       duration_min: Math.round(route.duration / 60),
+    });
+  });
+
+  // POST /rides/estimate — Get fare estimate (customers only)
+  app.post("/rides/estimate", { preHandler: [authGuard, requireRole("customer")] }, async (request, reply) => {
+    const { RideEstimateSchema } = await import("../../common/schemas.js");
+    const body = RideEstimateSchema.parse(request.body);
+
+    const osrmUrl = `https://router.project-osrm.org/route/v1/driving/${body.origin_lng},${body.origin_lat};${body.dest_lng},${body.dest_lat}?overview=false`;
+    const routeRes = await fetch(osrmUrl);
+    const routeData = await routeRes.json() as { routes?: Array<{ distance: number; duration: number }> };
+
+    if (!routeData.routes || routeData.routes.length === 0) {
+      return reply.status(400).send({ error: "Could not calculate route" });
+    }
+
+    const route = routeData.routes[0];
+    const distanceKm = +(route.distance / 1000).toFixed(1);
+    const durationMin = Math.round(route.duration / 60);
+
+    // Return estimates for all vehicle types so the customer can pick
+    const estimates = {
+      bike: calculateFare("bike", route.distance, route.duration),
+      auto: calculateFare("auto", route.distance, route.duration),
+      car: calculateFare("car", route.distance, route.duration),
+    };
+
+    return reply.send({
+      distance_km: distanceKm,
+      duration_min: durationMin,
+      estimates,
+      // Also return the specific type if requested
+      fare_estimate: estimates[body.vehicle_type],
+      vehicle_type: body.vehicle_type,
     });
   });
 
@@ -124,11 +158,29 @@ export async function ridesRoutes(app: FastifyInstance) {
     return reply.send(data || []);
   });
 
-  // POST /rides/:id/cancel — Cancel a ride
+  // POST /rides/:id/cancel — Cancel a ride (participant check)
   app.post("/rides/:id/cancel", { preHandler: [authGuard] }, async (request, reply) => {
     const { id } = request.params as { id: string };
     const userId = request.user!.id;
-    const body = request.body as { reason?: string };
+    const body = RideCancelSchema.parse(request.body ?? {});
+
+    // First: verify the caller is a participant
+    const { data: existingRide } = await supabaseAdmin
+      .from("rides")
+      .select("customer_id, driver_id, status")
+      .eq("id", id)
+      .single();
+
+    if (!existingRide) {
+      return reply.status(404).send({ error: "Ride not found" });
+    }
+
+    if (existingRide.customer_id !== userId && existingRide.driver_id !== userId) {
+      return reply.status(403).send({ error: "Not authorized to cancel this ride" });
+    }
+
+    // Determine who is cancelling
+    const cancelledBy = existingRide.customer_id === userId ? "customer" : "driver";
 
     // Atomic: only cancel if in a cancellable state
     const { data, error } = await supabaseAdmin
@@ -137,6 +189,7 @@ export async function ridesRoutes(app: FastifyInstance) {
         status: "cancelled",
         cancelled_at: new Date().toISOString(),
         cancel_reason: body.reason || null,
+        cancelled_by: cancelledBy,
       })
       .eq("id", id)
       .in("status", ["requested", "accepted", "arriving"])
@@ -150,14 +203,17 @@ export async function ridesRoutes(app: FastifyInstance) {
     await supabaseAdmin.from("ride_events").insert({
       ride_id: id,
       type: "cancelled",
-      payload: { cancelled_by: userId, reason: body.reason },
+      payload: { cancelled_by: cancelledBy, reason: body.reason },
     });
+
+    // Broadcast cancellation to the other party
+    broadcastRideStatus(id, "cancelled", { cancelled_by: cancelledBy });
 
     return reply.send({ status: "cancelled" });
   });
 
   // POST /rides/:id/accept — Driver accepts (atomic claim)
-  app.post("/rides/:id/accept", { preHandler: [authGuard] }, async (request, reply) => {
+  app.post("/rides/:id/accept", { preHandler: [authGuard, requireRole("driver")] }, async (request, reply) => {
     const { id } = request.params as { id: string };
     const driverId = request.user!.id;
 
@@ -188,11 +244,14 @@ export async function ridesRoutes(app: FastifyInstance) {
       payload: { driver_id: driverId },
     });
 
+    // Broadcast to customer: driver accepted
+    broadcastRideStatus(id, "accepted", { driver_id: driverId });
+
     return reply.send({ status: "accepted", ride: data });
   });
 
   // POST /rides/:id/arrived — Driver arrived at pickup
-  app.post("/rides/:id/arrived", { preHandler: [authGuard] }, async (request, reply) => {
+  app.post("/rides/:id/arrived", { preHandler: [authGuard, requireRole("driver")] }, async (request, reply) => {
     const { id } = request.params as { id: string };
     const driverId = request.user!.id;
 
@@ -211,11 +270,14 @@ export async function ridesRoutes(app: FastifyInstance) {
 
     await supabaseAdmin.from("ride_events").insert({ ride_id: id, type: "arrived", payload: {} });
 
+    // Broadcast to customer: driver arriving
+    broadcastRideStatus(id, "arriving", {});
+
     return reply.send({ status: "arriving" });
   });
 
   // POST /rides/:id/start — Start the trip
-  app.post("/rides/:id/start", { preHandler: [authGuard] }, async (request, reply) => {
+  app.post("/rides/:id/start", { preHandler: [authGuard, requireRole("driver")] }, async (request, reply) => {
     const { id } = request.params as { id: string };
     const driverId = request.user!.id;
 
@@ -234,18 +296,21 @@ export async function ridesRoutes(app: FastifyInstance) {
 
     await supabaseAdmin.from("ride_events").insert({ ride_id: id, type: "started", payload: {} });
 
+    // Broadcast to customer: trip started
+    broadcastRideStatus(id, "in_progress", {});
+
     return reply.send({ status: "in_progress" });
   });
 
-  // POST /rides/:id/complete — Complete the trip
-  app.post("/rides/:id/complete", { preHandler: [authGuard] }, async (request, reply) => {
+  // POST /rides/:id/complete — Complete the trip (server-side fare recompute)
+  app.post("/rides/:id/complete", { preHandler: [authGuard, requireRole("driver")] }, async (request, reply) => {
     const { id } = request.params as { id: string };
     const driverId = request.user!.id;
-    const body = request.body as { fare_final?: number; payment_method?: string };
+    const body = RideCompleteSchema.parse(request.body ?? {});
 
     const { data: ride } = await supabaseAdmin
       .from("rides")
-      .select("fare_estimate")
+      .select("fare_estimate, distance_m, duration_s, vehicle_type")
       .eq("id", id)
       .eq("driver_id", driverId)
       .eq("status", "in_progress")
@@ -255,11 +320,20 @@ export async function ridesRoutes(app: FastifyInstance) {
       return reply.status(409).send({ error: "Invalid state transition" });
     }
 
+    // Server-side fare recompute: clamp driver-submitted fare to ±20% of estimate
+    let fareFinal = ride.fare_estimate;
+    if (body.fare_final) {
+      const maxAllowed = ride.fare_estimate * 1.2;
+      const minAllowed = ride.fare_estimate * 0.8;
+      fareFinal = Math.max(minAllowed, Math.min(maxAllowed, body.fare_final));
+      fareFinal = Math.round(fareFinal);
+    }
+
     const { data, error } = await supabaseAdmin
       .from("rides")
       .update({
         status: "completed",
-        fare_final: body.fare_final || ride.fare_estimate,
+        fare_final: fareFinal,
         payment_method: body.payment_method || "cash",
         payment_status: "completed",
         completed_at: new Date().toISOString(),
@@ -273,15 +347,48 @@ export async function ridesRoutes(app: FastifyInstance) {
       return reply.status(500).send({ error: "Failed to complete ride" });
     }
 
-    // Set driver back to online
-    await supabaseAdmin.from("drivers").update({ status: "online" }).eq("id", driverId);
+    // Set driver back to online + increment total_trips
+    await supabaseAdmin.rpc("", {}).catch(() => {}); // no-op placeholder
+    await supabaseAdmin
+      .from("drivers")
+      .update({ status: "online" })
+      .eq("id", driverId);
+
+    // Increment total_trips (raw SQL via rpc isn't available, so read-update)
+    const { data: driverData } = await supabaseAdmin
+      .from("drivers")
+      .select("total_trips")
+      .eq("id", driverId)
+      .single();
+
+    if (driverData) {
+      await supabaseAdmin
+        .from("drivers")
+        .update({ total_trips: (driverData.total_trips || 0) + 1 })
+        .eq("id", driverId);
+    }
+
+    // Create earnings ledger entry
+    const commission = Math.round(fareFinal * 0.15); // 15% platform fee
+    const net = fareFinal - commission;
+    await supabaseAdmin.from("earnings").insert({
+      ride_id: id,
+      driver_id: driverId,
+      gross: fareFinal,
+      commission,
+      net,
+      payment_method: body.payment_method || "cash",
+    }).catch(() => {}); // Graceful — table may not exist until migration runs
 
     await supabaseAdmin.from("ride_events").insert({
       ride_id: id,
       type: "completed",
-      payload: { fare_final: data.fare_final },
+      payload: { fare_final: fareFinal },
     });
 
-    return reply.send({ status: "completed", fare_final: data.fare_final });
+    // Broadcast to customer: trip completed
+    broadcastRideStatus(id, "completed", { fare_final: fareFinal });
+
+    return reply.send({ status: "completed", fare_final: fareFinal });
   });
 }

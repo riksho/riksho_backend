@@ -1,10 +1,12 @@
 import type { FastifyInstance } from "fastify";
 import { authGuard } from "../../common/auth.guard.js";
+import { requireRole } from "../../common/roles.guard.js";
 import { supabaseAdmin } from "../../config/supabase.js";
+import { DriverLocationSchema, DriverRegisterSchema } from "../../common/schemas.js";
 
 export async function driversRoutes(app: FastifyInstance) {
-  // POST /drivers/online — Go online
-  app.post("/drivers/online", { preHandler: [authGuard] }, async (request, reply) => {
+  // POST /drivers/online — Go online (drivers only)
+  app.post("/drivers/online", { preHandler: [authGuard, requireRole("driver")] }, async (request, reply) => {
     const driverId = request.user!.id;
 
     const { error } = await supabaseAdmin
@@ -13,14 +15,14 @@ export async function driversRoutes(app: FastifyInstance) {
       .eq("id", driverId);
 
     if (error) {
-      return reply.status(500).send({ error: "Failed to go online", details: error.message });
+      return reply.status(500).send({ error: "Failed to go online" });
     }
 
     return reply.send({ status: "online" });
   });
 
-  // POST /drivers/offline — Go offline
-  app.post("/drivers/offline", { preHandler: [authGuard] }, async (request, reply) => {
+  // POST /drivers/offline — Go offline (drivers only)
+  app.post("/drivers/offline", { preHandler: [authGuard, requireRole("driver")] }, async (request, reply) => {
     const driverId = request.user!.id;
 
     const { error } = await supabaseAdmin
@@ -29,20 +31,22 @@ export async function driversRoutes(app: FastifyInstance) {
       .eq("id", driverId);
 
     if (error) {
-      return reply.status(500).send({ error: "Failed to go offline", details: error.message });
+      return reply.status(500).send({ error: "Failed to go offline" });
     }
+
+    // Clear stale location on offline
+    await supabaseAdmin
+      .from("driver_locations")
+      .delete()
+      .eq("driver_id", driverId);
 
     return reply.send({ status: "offline" });
   });
 
-  // POST /drivers/location — Update current location (throttled upsert)
-  app.post("/drivers/location", { preHandler: [authGuard] }, async (request, reply) => {
+  // POST /drivers/location — Update current location (drivers only, Zod-validated)
+  app.post("/drivers/location", { preHandler: [authGuard, requireRole("driver")] }, async (request, reply) => {
     const driverId = request.user!.id;
-    const { lat, lng } = request.body as { lat: number; lng: number };
-
-    if (!lat || !lng) {
-      return reply.status(400).send({ error: "lat and lng are required" });
-    }
+    const { lat, lng } = DriverLocationSchema.parse(request.body);
 
     const { error } = await supabaseAdmin
       .from("driver_locations")
@@ -57,14 +61,14 @@ export async function driversRoutes(app: FastifyInstance) {
       );
 
     if (error) {
-      return reply.status(500).send({ error: "Failed to update location", details: error.message });
+      return reply.status(500).send({ error: "Failed to update location" });
     }
 
     return reply.send({ success: true });
   });
 
-  // GET /drivers/earnings — Earnings summary
-  app.get("/drivers/earnings", { preHandler: [authGuard] }, async (request, reply) => {
+  // GET /drivers/earnings — Earnings summary (drivers only)
+  app.get("/drivers/earnings", { preHandler: [authGuard, requireRole("driver")] }, async (request, reply) => {
     const driverId = request.user!.id;
     const { range } = request.query as { range?: string };
 
@@ -106,8 +110,8 @@ export async function driversRoutes(app: FastifyInstance) {
     });
   });
 
-  // GET /drivers/profile — Get driver profile
-  app.get("/drivers/profile", { preHandler: [authGuard] }, async (request, reply) => {
+  // GET /drivers/profile — Get driver profile (drivers only)
+  app.get("/drivers/profile", { preHandler: [authGuard, requireRole("driver")] }, async (request, reply) => {
     const driverId = request.user!.id;
 
     const { data, error } = await supabaseAdmin
@@ -124,18 +128,12 @@ export async function driversRoutes(app: FastifyInstance) {
   });
 
   // POST /drivers/register — Register as a driver (onboarding)
+  // No role guard — any authenticated user can register as a driver
   app.post("/drivers/register", { preHandler: [authGuard] }, async (request, reply) => {
     const driverId = request.user!.id;
-    const body = request.body as {
-      name: string;
-      license_no: string;
-      vehicle_type: string;
-      plate: string;
-      model: string;
-      seats?: number;
-    };
+    const body = DriverRegisterSchema.parse(request.body);
 
-    // Create driver profile
+    // Create driver profile (verification_status = pending by default from migration)
     const { error: driverError } = await supabaseAdmin.from("drivers").upsert({
       id: driverId,
       name: body.name,
@@ -143,11 +141,13 @@ export async function driversRoutes(app: FastifyInstance) {
       license_no: body.license_no,
       status: "offline",
       rating: 5.0,
+      is_verified: false,
+      verification_status: "pending",
       created_at: new Date().toISOString(),
     });
 
     if (driverError) {
-      return reply.status(500).send({ error: "Failed to create driver", details: driverError.message });
+      return reply.status(500).send({ error: "Failed to create driver" });
     }
 
     // Create vehicle
@@ -160,14 +160,20 @@ export async function driversRoutes(app: FastifyInstance) {
     });
 
     if (vehicleError) {
-      return reply.status(500).send({ error: "Failed to create vehicle", details: vehicleError.message });
+      return reply.status(500).send({ error: "Failed to create vehicle" });
     }
 
-    // Update user role metadata
+    // Update user role metadata + server-side role column
     await supabaseAdmin.auth.admin.updateUserById(driverId, {
       user_metadata: { role: "driver" },
     });
 
-    return reply.status(201).send({ success: true, message: "Driver registered successfully" });
+    // Also set role in users table (server-authoritative)
+    await supabaseAdmin
+      .from("users")
+      .update({ role: "driver" })
+      .eq("id", driverId);
+
+    return reply.status(201).send({ success: true, message: "Driver registered. Pending verification." });
   });
 }

@@ -1,6 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { authGuard } from "../../common/auth.guard.js";
 import { supabaseAdmin } from "../../config/supabase.js";
+import { ProfileUpdateSchema } from "../../common/schemas.js";
 
 export async function authRoutes(app: FastifyInstance) {
   // GET /me — Return authenticated user's profile
@@ -29,28 +30,27 @@ export async function authRoutes(app: FastifyInstance) {
       });
     }
 
-    return reply.send({ ...user, profile_complete: true });
+    return reply.send({ ...user, profile_complete: !!user.name });
   });
 
-  // PUT /me — Update authenticated user's profile
+  // PUT /me — Update authenticated user's profile (Zod-validated)
   app.put("/me", { preHandler: [authGuard] }, async (request, reply) => {
     const userId = request.user!.id;
-    const body = request.body as { name?: string; email?: string };
+    const body = ProfileUpdateSchema.parse(request.body ?? {});
 
     const { data, error } = await supabaseAdmin
       .from("users")
       .upsert({
         id: userId,
-        name: body.name,
+        ...(body.name && { name: body.name }),
         phone: request.user!.phone,
-        ...(body.email && { email: body.email }),
         updated_at: new Date().toISOString(),
       })
       .select()
       .single();
 
     if (error) {
-      return reply.status(500).send({ error: "Failed to update profile", details: error.message });
+      return reply.status(500).send({ error: "Failed to update profile" });
     }
 
     return reply.send(data);
