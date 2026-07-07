@@ -16,6 +16,9 @@ import { ratingsRoutes } from "./modules/ratings/ratings.routes.js";
 import { pushRoutes } from "./modules/notifications/push.routes.js";
 import { adminRoutes } from "./modules/admin/admin.routes.js";
 import businessRoutes from "./modules/business/business.routes.js";
+import { shipmentsRoutes } from "./modules/api-gateway/shipments.routes.js";
+import { fleetRoutes } from "./modules/fleet/fleet.routes.js";
+import { startScheduler } from "./modules/fleet/scheduler.js";
 
 const app = Fastify({
   logger: false, // We use our own pino logger
@@ -90,6 +93,11 @@ await app.register(ratingsRoutes);
 await app.register(pushRoutes);
 await app.register(adminRoutes);
 await app.register(businessRoutes);
+await app.register(shipmentsRoutes);
+await app.register(fleetRoutes);
+
+// --- Start Background Services ---
+startScheduler();
 
 // --- Graceful shutdown ---
 const shutdown = async (signal: string) => {
