@@ -26,7 +26,7 @@ export async function findNearbyDrivers(
 ): Promise<void> {
   // Approximate bounding box (1 degree lat ≈ 111km)
   // Expand radius for fleet since partners are sparse
-  const searchRadiusKm = serviceType === "fleet" ? 15 : SEARCH_RADIUS_KM;
+  const searchRadiusKm = serviceType === "fleet" ? 15 : (serviceType === "quick" ? 3 : SEARCH_RADIUS_KM);
   const latDelta = searchRadiusKm / 111;
   const lngDelta = searchRadiusKm / (111 * Math.cos((lat * Math.PI) / 180));
 

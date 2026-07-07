@@ -6,7 +6,7 @@ import { logger } from "../../common/logger.js";
 import { supabaseAdmin } from "../../config/supabase.js";
 import { calculateFare, type VehicleType } from "../fares/fares.config.js";
 import { findNearbyDrivers } from "../matching/matching.service.js";
-import { broadcastRideStatus } from "../matching/broadcast.service.js";
+import { broadcastRideStatus, broadcastOrderStatus } from "../matching/broadcast.service.js";
 import {
   RideRequestSchema,
   RideCancelSchema,
@@ -211,6 +211,7 @@ export async function ridesRoutes(app: FastifyInstance) {
 
     // Broadcast cancellation to the other party
     broadcastRideStatus(id, "cancelled", { cancelled_by: cancelledBy });
+    syncQuickOrder(id, "cancelled").catch(() => {});
 
     return reply.send({ status: "cancelled" });
   });
@@ -275,6 +276,7 @@ export async function ridesRoutes(app: FastifyInstance) {
 
     // Broadcast to customer: driver arriving
     broadcastRideStatus(id, "arriving", {});
+    syncQuickOrder(id, "arriving").catch(() => {});
 
     return reply.send({ status: "arriving" });
   });
@@ -301,6 +303,7 @@ export async function ridesRoutes(app: FastifyInstance) {
 
     // Broadcast to customer: trip started
     broadcastRideStatus(id, "in_progress", {});
+    syncQuickOrder(id, "in_progress").catch(() => {});
 
     return reply.send({ status: "in_progress" });
   });
@@ -388,7 +391,30 @@ export async function ridesRoutes(app: FastifyInstance) {
 
     // Broadcast to customer: trip completed
     broadcastRideStatus(id, "completed", { fare_final: fareFinal });
+    syncQuickOrder(id, "completed").catch(() => {});
 
     return reply.send({ status: "completed", fare_final: fareFinal });
   });
+
+  // Helper to sync ride state changes to the linked quick_order (if applicable)
+  async function syncQuickOrder(rideId: string, status: string) {
+    const { data: order } = await supabaseAdmin
+      .from("quick_orders")
+      .select("id")
+      .eq("ride_id", rideId)
+      .single();
+    
+    if (order) {
+      let orderStatus = "";
+      if (status === "arriving") orderStatus = "rider_arriving_at_store"; // Not heavily used, but informative
+      if (status === "in_progress") orderStatus = "out_for_delivery";
+      if (status === "completed") orderStatus = "delivered";
+      if (status === "cancelled") orderStatus = "delivery_cancelled";
+
+      if (orderStatus) {
+        await supabaseAdmin.from("quick_orders").update({ status: orderStatus }).eq("id", order.id);
+        broadcastOrderStatus(order.id, orderStatus).catch(() => {});
+      }
+    }
+  }
 }

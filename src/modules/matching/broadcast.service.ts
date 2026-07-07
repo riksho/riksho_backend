@@ -41,6 +41,39 @@ export async function broadcastRideStatus(
 }
 
 /**
+ * Broadcast an order status change to the `order:{orderId}` channel
+ * so the customer app can receive live Q-Commerce updates.
+ */
+export async function broadcastOrderStatus(
+  orderId: string,
+  status: string,
+  payload: Record<string, unknown> = {}
+): Promise<void> {
+  try {
+    const url = `${env.SUPABASE_URL}/realtime/v1/api/broadcast`;
+    const res = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        apikey: env.SUPABASE_ANON_KEY,
+        Authorization: `Bearer ${env.SUPABASE_SERVICE_ROLE_KEY}`,
+      },
+      body: JSON.stringify({
+        channel: `order:${orderId}`,
+        event: "status_change",
+        payload: { status, ...payload },
+      }),
+    });
+
+    if (!res.ok) {
+      logger.warn({ orderId, status, httpStatus: res.status }, "Broadcast order status failed");
+    }
+  } catch (err) {
+    logger.warn({ orderId, err }, "Broadcast order status error");
+  }
+}
+
+/**
  * Broadcast a ride offer to a specific driver via the `driver:{driverId}` channel.
  * Uses the same Realtime REST broadcast endpoint.
  */
