@@ -53,6 +53,8 @@ export async function broadcastRideOffer(
     origin_address?: string;
     dest_address?: string;
     vehicle_type: string;
+    service_type?: string;
+    cargo_weight_kg?: number;
     fare_estimate?: number;
     distance_km?: number;
   }

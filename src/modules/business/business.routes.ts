@@ -1,6 +1,7 @@
 import { FastifyInstance } from "fastify";
 import { supabaseAdmin } from "../../config/supabase.js";
-import { authGuard, requireRole } from "../../common/auth.guard.js";
+import { authGuard } from "../../common/auth.guard.js";
+import { requireRole } from "../../common/roles.guard.js";
 import { BusinessRegisterSchema } from "../../common/schemas.js";
 
 export default async function businessRoutes(app: FastifyInstance) {
