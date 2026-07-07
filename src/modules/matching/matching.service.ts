@@ -56,18 +56,22 @@ export async function findNearbyDrivers(
     .select("id, name, partner_type, vehicles!inner(type, capacity_kg)")
     .in("id", driverIds)
     .eq("status", "online")
-    .eq("is_verified", true)
-    .eq("vehicles.type", vehicleType);
+    .eq("is_verified", true);
 
   if (serviceType === "fleet") {
-    query = query.eq("partner_type", "fleet");
+    // Fleet: match the requested truck class + enough payload capacity.
+    query = query.eq("partner_type", "fleet").eq("vehicles.type", vehicleType);
     if (cargoWeightKg) {
       query = query.gte("vehicles.capacity_kg", cargoWeightKg);
     }
   } else if (serviceType === "quick") {
+    // Quick: any verified quick_rider nearby. We deliberately do NOT filter on
+    // vehicles.type — a rider's registered vehicle (auto/bike) is irrelevant to
+    // carrying a small delivery bag, and enforcing it caused zero matches (M4).
     query = query.eq("partner_type", "quick_rider");
   } else {
-    query = query.eq("partner_type", "cab_bike");
+    // Move (cab/bike): match the requested vehicle type.
+    query = query.eq("partner_type", "cab_bike").eq("vehicles.type", vehicleType);
   }
 
   const { data: onlineDrivers } = await query.limit(MAX_DRIVERS);

@@ -1,6 +1,28 @@
 import { supabaseAdmin } from "../../config/supabase.js";
 import { logger } from "../../common/logger.js";
 
+type ReleaseItem = { product_id: string; qty: number };
+
+/**
+ * Releases a specific set of reserved items back to the available pool for a
+ * darkstore. Used to roll back a reservation when order creation fails *before*
+ * any quick_order_items rows exist (so releaseInventory-by-orderId can't work).
+ * Delegates to the atomic RPC.
+ */
+export async function releaseInventoryItems(darkstoreId: string, items: ReleaseItem[]) {
+  try {
+    const { error } = await supabaseAdmin.rpc("release_inventory", {
+      p_darkstore_id: darkstoreId,
+      p_items: items,
+    });
+    if (error) throw error;
+    return true;
+  } catch (err) {
+    logger.error({ darkstoreId, err }, "Failed to roll back inventory reservation");
+    return false;
+  }
+}
+
 /**
  * Releases reserved inventory back to available pool.
  * Used when an order is cancelled or times out before payment/packing.

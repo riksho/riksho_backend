@@ -2,9 +2,12 @@ import { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { supabaseAdmin } from "../../config/supabase.js";
 import { authGuard } from "../../common/auth.guard.js";
-import { releaseInventory } from "../inventory/inventory.service.js";
+import { requireRole } from "../../common/roles.guard.js";
+import { logger } from "../../common/logger.js";
+import { releaseInventory, releaseInventoryItems } from "../inventory/inventory.service.js";
 import { findNearbyDrivers } from "../matching/matching.service.js";
 import { broadcastOrderStatus } from "../matching/broadcast.service.js";
+import { QUICK_DELIVERY_FEE } from "../fares/fares.config.js";
 
 const CreateOrderSchema = z.object({
   darkstore_id: z.string().uuid(),
@@ -26,24 +29,24 @@ export async function ordersRoutes(app: FastifyInstance) {
 
     // 1. Calculate totals
     const itemTotal = body.items.reduce((sum, item) => sum + (item.qty * item.unit_price), 0);
-    const deliveryFee = 20; // Hardcoded 20 INR delivery fee for MVP (or fetch from fares.config)
+    const deliveryFee = QUICK_DELIVERY_FEE;
     const total = itemTotal + deliveryFee;
+    const reserveItems = body.items.map((i) => ({ product_id: i.product_id, qty: i.qty }));
 
     // 2. Reserve Inventory (Atomic RPC)
     const { data: reserveSuccess, error: reserveErr } = await supabaseAdmin.rpc("reserve_inventory", {
       p_darkstore_id: body.darkstore_id,
-      p_items: body.items,
+      p_items: reserveItems,
     });
 
     if (reserveErr || !reserveSuccess) {
-      return reply.status(400).send({ 
-        error: "INSUFFICIENT_INVENTORY", 
+      return reply.status(400).send({
+        error: "INSUFFICIENT_INVENTORY",
         message: "One or more items in your cart are out of stock.",
-        details: reserveErr 
       });
     }
 
-    // 3. Create Order
+    // 3. Create Order — roll the reservation back if this fails.
     const { data: order, error: orderErr } = await supabaseAdmin
       .from("quick_orders")
       .insert({
@@ -60,14 +63,13 @@ export async function ordersRoutes(app: FastifyInstance) {
       .select()
       .single();
 
-    if (orderErr) {
-      // Rollback reservation manually if order creation fails
-      // We don't have order_id yet, so we'd have to write a custom rollback or rely on the release function not needing order_id (refactoring needed for real production)
-      // For MVP, we assume insert succeeds.
+    if (orderErr || !order) {
+      await releaseInventoryItems(body.darkstore_id, reserveItems);
+      logger.error({ customerId, err: orderErr?.message }, "Order insert failed; reservation rolled back");
       return reply.status(500).send({ error: "Failed to create order" });
     }
 
-    // 4. Create Order Items
+    // 4. Create Order Items — also roll back (and delete the order) on failure.
     const orderItems = body.items.map(item => ({
       order_id: order.id,
       product_id: item.product_id,
@@ -75,7 +77,13 @@ export async function ordersRoutes(app: FastifyInstance) {
       unit_price: item.unit_price
     }));
 
-    await supabaseAdmin.from("quick_order_items").insert(orderItems);
+    const { error: itemsErr } = await supabaseAdmin.from("quick_order_items").insert(orderItems);
+    if (itemsErr) {
+      await releaseInventoryItems(body.darkstore_id, reserveItems);
+      await supabaseAdmin.from("quick_orders").delete().eq("id", order.id);
+      logger.error({ orderId: order.id, err: itemsErr.message }, "Order items insert failed; order + reservation rolled back");
+      return reply.status(500).send({ error: "Failed to create order items" });
+    }
 
     return reply.status(201).send({ message: "Order placed successfully", order });
   });
@@ -121,25 +129,59 @@ export async function ordersRoutes(app: FastifyInstance) {
     return reply.send({ orders });
   });
 
-  // --- Store Operations Endpoints (in reality, protected by a store-ops auth guard) ---
-  
-  app.post("/orders/:id/accept", async (request, reply) => {
+  // GET /orders/:id — single order (efficient tracking; participant-checked)
+  app.get("/orders/:id", { preHandler: [authGuard] }, async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const userId = request.user!.id;
+    const role = request.user!.role;
+
+    const { data: order, error } = await supabaseAdmin
+      .from("quick_orders")
+      .select("*, quick_order_items(product_id, qty, unit_price, products(name, image_url))")
+      .eq("id", id)
+      .single();
+
+    if (error || !order) return reply.status(404).send({ error: "Order not found" });
+
+    // The owning customer, or store_ops/admin, may view it.
+    if (order.customer_id !== userId && role !== "store_ops" && role !== "admin") {
+      return reply.status(403).send({ error: "Not authorized to view this order" });
+    }
+
+    return reply.send({ order });
+  });
+
+  // GET /orders/queue — active orders for the store-ops fulfilment queue.
+  app.get("/orders/queue", { preHandler: [authGuard, requireRole("store_ops", "admin")] }, async (request, reply) => {
+    const { data: orders, error } = await supabaseAdmin
+      .from("quick_orders")
+      .select("id, status, total, delivery_address, created_at, quick_order_items(qty, products(name))")
+      .in("status", ["placed", "accepted", "picking", "packed"])
+      .order("created_at", { ascending: true });
+
+    if (error) return reply.status(500).send({ error: "Failed to fetch queue" });
+    return reply.send({ orders: orders || [] });
+  });
+
+  // --- Store Operations Endpoints (gated to store_ops / admin roles) ---
+
+  app.post("/orders/:id/accept", { preHandler: [authGuard, requireRole("store_ops", "admin")] }, async (request, reply) => {
     const { id } = request.params as { id: string };
     await updateOrderStatus(id, "accepted");
     return reply.send({ message: "Order accepted by store" });
   });
 
-  app.post("/orders/:id/picking", async (request, reply) => {
+  app.post("/orders/:id/picking", { preHandler: [authGuard, requireRole("store_ops", "admin")] }, async (request, reply) => {
     const { id } = request.params as { id: string };
     await updateOrderStatus(id, "picking");
     return reply.send({ message: "Order picking started" });
   });
 
-  app.post("/orders/:id/packed", async (request, reply) => {
+  app.post("/orders/:id/packed", { preHandler: [authGuard, requireRole("store_ops", "admin")] }, async (request, reply) => {
     const { id } = request.params as { id: string };
-    
-    // 1. Update status
-    await updateOrderStatus(id, "packed");
+
+    // 1. Update status + stamp packed_at for SLA tracking
+    await updateOrderStatus(id, "packed", { packed_at: new Date().toISOString() });
 
     // 2. Fetch order details to trigger dispatch
     const { data: order } = await supabaseAdmin
@@ -151,9 +193,11 @@ export async function ordersRoutes(app: FastifyInstance) {
     if (order && order.darkstores) {
       // Create a "ride" record for the delivery rider
       // We map the darkstore as origin and customer as destination
-      const { data: ride } = await supabaseAdmin
+      const { data: ride, error: rideErr } = await supabaseAdmin
         .from("rides")
         .insert({
+          customer_id: order.customer_id, // the person receiving the delivery
+          order_id: order.id,             // satisfies check_job_ownership + links back
           origin_lat: order.darkstores.lat,
           origin_lng: order.darkstores.lng,
           origin_address: "Darkstore Pickup",
@@ -169,6 +213,10 @@ export async function ordersRoutes(app: FastifyInstance) {
         })
         .select()
         .single();
+
+      if (rideErr) {
+        logger.error({ orderId: id, err: rideErr.message }, "Failed to create delivery ride for packed order");
+      }
 
       if (ride) {
         // Link the ride to the order
@@ -186,12 +234,12 @@ export async function ordersRoutes(app: FastifyInstance) {
     return reply.send({ message: "Order packed and dispatch triggered" });
   });
 
-  async function updateOrderStatus(orderId: string, status: string) {
+  async function updateOrderStatus(orderId: string, status: string, extra: Record<string, unknown> = {}) {
     await supabaseAdmin
       .from("quick_orders")
-      .update({ status })
+      .update({ status, ...extra })
       .eq("id", orderId);
-    
+
     // Notify customer app
     broadcastOrderStatus(orderId, status).catch(() => {});
   }

@@ -1,8 +1,23 @@
 import { FastifyInstance } from "fastify";
+import { z } from "zod";
 import { supabaseAdmin } from "../../config/supabase.js";
+import { logger } from "../../common/logger.js";
 import { authGuard } from "../../common/auth.guard.js";
 import { requireRole } from "../../common/roles.guard.js";
 import { BusinessRegisterSchema } from "../../common/schemas.js";
+import { calculateFare, type VehicleType } from "../fares/fares.config.js";
+import { findNearbyDrivers } from "../matching/matching.service.js";
+
+const BusinessJobSchema = z.object({
+  origin_lat: z.number().min(-90).max(90),
+  origin_lng: z.number().min(-180).max(180),
+  origin_address: z.string().min(1),
+  dest_lat: z.number().min(-90).max(90),
+  dest_lng: z.number().min(-180).max(180),
+  dest_address: z.string().min(1),
+  vehicle_type: z.enum(["tempo", "mini_truck", "truck"]),
+  cargo_weight_kg: z.number().min(1),
+});
 
 export default async function businessRoutes(app: FastifyInstance) {
   // POST /business/register — Upgrade user account to business
@@ -65,5 +80,95 @@ export default async function businessRoutes(app: FastifyInstance) {
     }
 
     return reply.send({ business });
+  });
+
+  // Helper: resolve the caller's business row (or null).
+  async function getBusinessForUser(userId: string) {
+    const { data } = await supabaseAdmin
+      .from("businesses")
+      .select("id")
+      .eq("owner_user_id", userId)
+      .single();
+    return data;
+  }
+
+  // POST /business/jobs — Create a fleet job attributed to the business.
+  // This is the app-facing counterpart to the /api/v1/shipments API path;
+  // it guarantees business_id is attached (unlike the generic /rides route).
+  app.post("/business/jobs", { preHandler: [authGuard, requireRole("customer")] }, async (request, reply) => {
+    const userId = request.user!.id;
+    const business = await getBusinessForUser(userId);
+    if (!business) {
+      return reply.status(403).send({ error: "No business account. Register a business first." });
+    }
+
+    const body = BusinessJobSchema.parse(request.body);
+
+    // Route + fare
+    const osrmUrl = `https://router.project-osrm.org/route/v1/driving/${body.origin_lng},${body.origin_lat};${body.dest_lng},${body.dest_lat}?overview=false`;
+    let distanceM = 0, durationS = 0;
+    try {
+      const routeRes = await fetch(osrmUrl);
+      const routeData = await routeRes.json() as { routes?: Array<{ distance: number; duration: number }> };
+      if (routeData.routes?.length) {
+        distanceM = Math.round(routeData.routes[0].distance);
+        durationS = Math.round(routeData.routes[0].duration);
+      }
+    } catch (err) {
+      logger.warn({ err }, "OSRM routing failed for business job; proceeding with 0 distance");
+    }
+
+    const fareEstimate = calculateFare(body.vehicle_type as VehicleType, distanceM, durationS);
+
+    const { data: ride, error } = await supabaseAdmin
+      .from("rides")
+      .insert({
+        business_id: business.id,
+        service_type: "fleet",
+        status: "requested",
+        vehicle_type: body.vehicle_type,
+        origin_lat: body.origin_lat,
+        origin_lng: body.origin_lng,
+        origin_address: body.origin_address,
+        dest_lat: body.dest_lat,
+        dest_lng: body.dest_lng,
+        dest_address: body.dest_address,
+        cargo_weight_kg: body.cargo_weight_kg,
+        distance_m: distanceM,
+        duration_s: durationS,
+        fare_estimate: fareEstimate,
+        payment_method: "invoice",
+        payment_status: "pending",
+      })
+      .select()
+      .single();
+
+    if (error || !ride) {
+      logger.error({ err: error?.message }, "Failed to create business fleet job");
+      return reply.status(500).send({ error: "Failed to create fleet job" });
+    }
+
+    findNearbyDrivers(body.origin_lat, body.origin_lng, body.vehicle_type, ride.id, "fleet", body.cargo_weight_kg).catch(() => {});
+
+    return reply.status(201).send({ ride_id: ride.id, status: ride.status, fare_estimate: fareEstimate });
+  });
+
+  // GET /business/jobs — This business's fleet job history.
+  app.get("/business/jobs", { preHandler: [authGuard, requireRole("customer")] }, async (request, reply) => {
+    const userId = request.user!.id;
+    const business = await getBusinessForUser(userId);
+    if (!business) {
+      return reply.status(403).send({ error: "No business account." });
+    }
+
+    const { data: jobs, error } = await supabaseAdmin
+      .from("rides")
+      .select("*")
+      .eq("business_id", business.id)
+      .order("created_at", { ascending: false })
+      .limit(100);
+
+    if (error) return reply.status(500).send({ error: "Failed to fetch jobs" });
+    return reply.send({ jobs: jobs || [] });
   });
 }

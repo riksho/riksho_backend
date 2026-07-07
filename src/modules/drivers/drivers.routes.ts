@@ -140,6 +140,7 @@ export async function driversRoutes(app: FastifyInstance) {
       phone: request.user!.phone,
       license_no: body.license_no,
       status: "offline",
+      partner_type: body.partner_type, // cab_bike | fleet | quick_rider — drives matching
       rating: 5.0,
       is_verified: false,
       verification_status: "pending",
@@ -156,6 +157,7 @@ export async function driversRoutes(app: FastifyInstance) {
       type: body.vehicle_type,
       plate: body.plate,
       model: body.model,
+      capacity_kg: body.capacity_kg ?? null, // needed for fleet capacity matching
       seats: body.seats || (body.vehicle_type === "bike" ? 1 : body.vehicle_type === "auto" ? 3 : 4),
     });
 

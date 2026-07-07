@@ -49,6 +49,8 @@ export const FARE_CONFIG = {
 
 export type VehicleType = keyof typeof FARE_CONFIG;
 
+export const QUICK_DELIVERY_FEE = 20;
+
 /**
  * Calculate fare based on distance and duration.
  */
@@ -56,7 +58,8 @@ export function calculateFare(
   vehicleType: VehicleType,
   distanceMeters: number,
   durationSeconds: number,
-  surgeFactor?: number
+  surgeFactor?: number,
+  cargoWeightKg?: number
 ): number {
   const config = FARE_CONFIG[vehicleType];
   if (!config) throw new Error(`Unknown vehicle type: ${vehicleType}`);
@@ -65,8 +68,14 @@ export function calculateFare(
   const durationMin = durationSeconds / 60;
   const surge = surgeFactor || config.surge_multiplier;
 
-  const rawFare =
+  let rawFare =
     (config.base_fare + config.per_km * distanceKm + config.per_min * durationMin) * surge;
+
+  // Apply cargo weight surcharge for fleet
+  if (cargoWeightKg && cargoWeightKg > 100) {
+    // Surcharge of ₹2 per kg over 100kg
+    rawFare += (cargoWeightKg - 100) * 2;
+  }
 
   return Math.max(Math.round(rawFare), config.minimum_fare);
 }

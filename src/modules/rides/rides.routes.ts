@@ -7,6 +7,7 @@ import { supabaseAdmin } from "../../config/supabase.js";
 import { calculateFare, type VehicleType } from "../fares/fares.config.js";
 import { findNearbyDrivers } from "../matching/matching.service.js";
 import { broadcastRideStatus, broadcastOrderStatus } from "../matching/broadcast.service.js";
+import { fireWebhook } from "../notifications/webhook.service.js";
 import {
   RideRequestSchema,
   RideCancelSchema,
@@ -212,6 +213,7 @@ export async function ridesRoutes(app: FastifyInstance) {
     // Broadcast cancellation to the other party
     broadcastRideStatus(id, "cancelled", { cancelled_by: cancelledBy });
     syncQuickOrder(id, "cancelled").catch(() => {});
+    notifyBusinessWebhook(id, "cancelled", { cancelled_by: cancelledBy }).catch(() => {});
 
     return reply.send({ status: "cancelled" });
   });
@@ -250,6 +252,7 @@ export async function ridesRoutes(app: FastifyInstance) {
 
     // Broadcast to customer: driver accepted
     broadcastRideStatus(id, "accepted", { driver_id: driverId });
+    notifyBusinessWebhook(id, "accepted", { driver_id: driverId }).catch(() => {});
 
     return reply.send({ status: "accepted", ride: data });
   });
@@ -277,6 +280,7 @@ export async function ridesRoutes(app: FastifyInstance) {
     // Broadcast to customer: driver arriving
     broadcastRideStatus(id, "arriving", {});
     syncQuickOrder(id, "arriving").catch(() => {});
+    notifyBusinessWebhook(id, "arriving").catch(() => {});
 
     return reply.send({ status: "arriving" });
   });
@@ -304,6 +308,7 @@ export async function ridesRoutes(app: FastifyInstance) {
     // Broadcast to customer: trip started
     broadcastRideStatus(id, "in_progress", {});
     syncQuickOrder(id, "in_progress").catch(() => {});
+    notifyBusinessWebhook(id, "in_progress").catch(() => {});
 
     return reply.send({ status: "in_progress" });
   });
@@ -392,6 +397,7 @@ export async function ridesRoutes(app: FastifyInstance) {
     // Broadcast to customer: trip completed
     broadcastRideStatus(id, "completed", { fare_final: fareFinal });
     syncQuickOrder(id, "completed").catch(() => {});
+    notifyBusinessWebhook(id, "completed", { fare_final: fareFinal }).catch(() => {});
 
     return reply.send({ status: "completed", fare_final: fareFinal });
   });
@@ -412,9 +418,24 @@ export async function ridesRoutes(app: FastifyInstance) {
       if (status === "cancelled") orderStatus = "delivery_cancelled";
 
       if (orderStatus) {
-        await supabaseAdmin.from("quick_orders").update({ status: orderStatus }).eq("id", order.id);
+        const patch: Record<string, unknown> = { status: orderStatus };
+        if (orderStatus === "delivered") patch.delivered_at = new Date().toISOString();
+        await supabaseAdmin.from("quick_orders").update(patch).eq("id", order.id);
         broadcastOrderStatus(order.id, orderStatus).catch(() => {});
       }
+    }
+  }
+
+  // Helper: notify a business's registered webhooks when its fleet job changes state.
+  async function notifyBusinessWebhook(rideId: string, status: string, extra: Record<string, unknown> = {}) {
+    const { data: ride } = await supabaseAdmin
+      .from("rides")
+      .select("business_id, service_type")
+      .eq("id", rideId)
+      .single();
+
+    if (ride?.service_type === "fleet" && ride.business_id) {
+      fireWebhook(ride.business_id, `shipment.${status}`, { ride_id: rideId, status, ...extra }).catch(() => {});
     }
   }
 }

@@ -22,15 +22,19 @@ export async function shipmentsRoutes(app: FastifyInstance) {
     const businessId = request.apiUser!.business_id;
     const body = ShipmentRequestSchema.parse(request.body);
 
-    // 1. Check for idempotency
+    // 1. Check for idempotency — the key is globally UNIQUE (migration 006),
+    //    so a match means this exact request was already processed.
     const { data: existingJob } = await supabaseAdmin
       .from("rides")
-      .select("id, status")
+      .select("id, status, business_id")
       .eq("idempotency_key", body.idempotency_key)
-      .eq("business_id", businessId) // Assumes rides table gets a business_id later, or we just rely on idempotency_key uniqueness globally
       .maybeSingle();
 
     if (existingJob) {
+      // Guard against key reuse across businesses.
+      if (existingJob.business_id && existingJob.business_id !== businessId) {
+        return reply.status(409).send({ error: "idempotency_key already used by another account" });
+      }
       return reply.send({
         message: "Shipment already exists",
         ride_id: existingJob.id,
@@ -83,15 +87,27 @@ export async function shipmentsRoutes(app: FastifyInstance) {
         duration_s: Math.round(route.duration),
         fare_estimate: fareEstimate,
         status: "requested",
-        payment_method: "cash", // Typically businesses might have 'invoice'
+        payment_method: "invoice", // B2B API shipments settle via monthly invoice
         payment_status: "pending",
         idempotency_key: body.idempotency_key,
-        // customer_id is null for API shipments, instead we can add business_id or just rely on API key
+        business_id: businessId, // owner (customer_id is null for API shipments)
       })
       .select()
       .single();
 
     if (error) {
+      // 23505 = unique violation → a concurrent request with the same
+      // idempotency_key won the race. Return that job instead of erroring.
+      if ((error as any).code === "23505") {
+        const { data: raced } = await supabaseAdmin
+          .from("rides")
+          .select("id, status")
+          .eq("idempotency_key", body.idempotency_key)
+          .maybeSingle();
+        if (raced) {
+          return reply.send({ message: "Shipment already exists", ride_id: raced.id, status: raced.status });
+        }
+      }
       return reply.status(500).send({ error: "Failed to create shipment" });
     }
 
