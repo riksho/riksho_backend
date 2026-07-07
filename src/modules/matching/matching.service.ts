@@ -20,11 +20,15 @@ export async function findNearbyDrivers(
   lat: number,
   lng: number,
   vehicleType: string,
-  rideId: string
+  rideId: string,
+  serviceType: "move" | "fleet" | "quick" = "move",
+  cargoWeightKg?: number
 ): Promise<void> {
   // Approximate bounding box (1 degree lat ≈ 111km)
-  const latDelta = SEARCH_RADIUS_KM / 111;
-  const lngDelta = SEARCH_RADIUS_KM / (111 * Math.cos((lat * Math.PI) / 180));
+  // Expand radius for fleet since partners are sparse
+  const searchRadiusKm = serviceType === "fleet" ? 15 : SEARCH_RADIUS_KM;
+  const latDelta = searchRadiusKm / 111;
+  const lngDelta = searchRadiusKm / (111 * Math.cos((lat * Math.PI) / 180));
 
   // Filter stale locations: only drivers who updated in the last 2 minutes
   const staleThreshold = new Date(Date.now() - STALE_MINUTES * 60 * 1000).toISOString();
@@ -37,34 +41,46 @@ export async function findNearbyDrivers(
     .gte("lng", lng - lngDelta)
     .lte("lng", lng + lngDelta)
     .gte("updated_at", staleThreshold)
-    .limit(MAX_DRIVERS * 2); // Fetch extra, filter by status next
+    .limit(MAX_DRIVERS * 4); // Fetch extra for extended filtering
 
   if (error || !nearbyLocations?.length) {
     logger.warn({ rideId }, "No nearby drivers found");
     return;
   }
 
-  // Filter to only online drivers with matching vehicle type
+  // Filter to only online drivers with matching vehicle type and capacity
   const driverIds = nearbyLocations.map((loc) => loc.driver_id);
-
-  const { data: onlineDrivers } = await supabaseAdmin
+  
+  let query = supabaseAdmin
     .from("drivers")
-    .select("id, name, vehicles!inner(type)")
+    .select("id, name, partner_type, vehicles!inner(type, capacity_kg)")
     .in("id", driverIds)
     .eq("status", "online")
     .eq("is_verified", true)
-    .eq("vehicles.type", vehicleType)
-    .limit(MAX_DRIVERS);
+    .eq("vehicles.type", vehicleType);
+
+  if (serviceType === "fleet") {
+    query = query.eq("partner_type", "fleet");
+    if (cargoWeightKg) {
+      query = query.gte("vehicles.capacity_kg", cargoWeightKg);
+    }
+  } else if (serviceType === "quick") {
+    query = query.eq("partner_type", "quick_rider");
+  } else {
+    query = query.eq("partner_type", "cab_bike");
+  }
+
+  const { data: onlineDrivers } = await query.limit(MAX_DRIVERS);
 
   if (!onlineDrivers?.length) {
-    logger.warn({ rideId }, "No online drivers nearby");
+    logger.warn({ rideId }, "No online drivers nearby matching criteria");
     return;
   }
 
-  // Fetch ride details to include in the offer
+    // Fetch ride details to include in the offer
   const { data: rideData } = await supabaseAdmin
     .from("rides")
-    .select("origin_address, dest_address, fare_estimate, distance_m")
+    .select("origin_address, dest_address, fare_estimate, distance_m, service_type, cargo_weight_kg")
     .eq("id", rideId)
     .single();
 
@@ -77,6 +93,8 @@ export async function findNearbyDrivers(
       origin_address: rideData?.origin_address,
       dest_address: rideData?.dest_address,
       vehicle_type: vehicleType,
+      service_type: rideData?.service_type,
+      cargo_weight_kg: rideData?.cargo_weight_kg,
       fare_estimate: rideData?.fare_estimate,
       distance_km: rideData?.distance_m ? +(rideData.distance_m / 1000).toFixed(1) : undefined,
     });

@@ -24,6 +24,27 @@ export const FARE_CONFIG = {
     minimum_fare: 80,
     surge_multiplier: 1.0,
   },
+  tempo: {
+    base_fare: 150,
+    per_km: 25,
+    per_min: 3,
+    minimum_fare: 250,
+    surge_multiplier: 1.0,
+  },
+  mini_truck: {
+    base_fare: 250,
+    per_km: 35,
+    per_min: 4,
+    minimum_fare: 400,
+    surge_multiplier: 1.0,
+  },
+  truck: {
+    base_fare: 500,
+    per_km: 50,
+    per_min: 5,
+    minimum_fare: 800,
+    surge_multiplier: 1.0,
+  },
 } as const;
 
 export type VehicleType = keyof typeof FARE_CONFIG;

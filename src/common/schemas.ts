@@ -9,7 +9,9 @@ export const RideRequestSchema = z.object({
   dest_lat: z.number().min(-90).max(90),
   dest_lng: z.number().min(-180).max(180),
   dest_address: z.string().min(1),
-  vehicle_type: z.enum(["bike", "auto", "car"]),
+  vehicle_type: z.enum(["bike", "auto", "car", "tempo", "mini_truck", "truck"]),
+  service_type: z.enum(["move", "fleet", "quick"]).optional().default("move"),
+  cargo_weight_kg: z.number().min(1).optional(),
 });
 
 export const RideEstimateSchema = z.object({
@@ -39,10 +41,22 @@ export const DriverLocationSchema = z.object({
 export const DriverRegisterSchema = z.object({
   name: z.string().min(1),
   license_no: z.string().min(1),
-  vehicle_type: z.enum(["bike", "auto", "car"]),
+  vehicle_type: z.enum(["bike", "auto", "car", "tempo", "mini_truck", "truck"]),
   plate: z.string().min(1),
   model: z.string().min(1),
   seats: z.number().int().min(1).max(8).optional(),
+  partner_type: z.enum(["cab_bike", "fleet", "quick_rider"]).optional().default("cab_bike"),
+  capacity_kg: z.number().int().optional(),
+});
+
+// ---- Business ----
+
+export const BusinessRegisterSchema = z.object({
+  name: z.string().min(1),
+  gstin: z.string().min(1),
+  address: z.string().min(1),
+  city: z.string().min(1),
+  tier: z.string().optional(),
 });
 
 // ---- Ratings ----

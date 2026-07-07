@@ -44,6 +44,8 @@ export async function ridesRoutes(app: FastifyInstance) {
         dest_lat: body.dest_lat,
         dest_lng: body.dest_lng,
         dest_address: body.dest_address,
+        service_type: body.service_type,
+        cargo_weight_kg: body.cargo_weight_kg,
         distance_m: Math.round(route.distance),
         duration_s: Math.round(route.duration),
         fare_estimate: fareEstimate,
@@ -61,11 +63,11 @@ export async function ridesRoutes(app: FastifyInstance) {
     await supabaseAdmin.from("ride_events").insert({
       ride_id: ride.id,
       type: "requested",
-      payload: { customer_id: customerId, vehicle_type: body.vehicle_type },
+      payload: { customer_id: customerId, vehicle_type: body.vehicle_type, service_type: body.service_type },
     });
 
     // Find nearby drivers and notify them (async — don't await)
-    findNearbyDrivers(body.origin_lat, body.origin_lng, body.vehicle_type, ride.id).catch(() => {});
+    findNearbyDrivers(body.origin_lat, body.origin_lng, body.vehicle_type, ride.id, body.service_type, body.cargo_weight_kg).catch(() => {});
 
     return reply.status(201).send({
       ride_id: ride.id,
