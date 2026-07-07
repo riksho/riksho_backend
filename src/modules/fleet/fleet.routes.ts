@@ -1,7 +1,7 @@
 import { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { supabaseAdmin } from "../../config/supabase.js";
-import { authGuard, requireRole } from "../../common/auth.guard.js"; // note: authGuard is here, we will need roles.guard.js
+import { authGuard } from "../../common/auth.guard.js"; // note: authGuard is here, we will need roles.guard.js
 import { requireRole as roleGuard } from "../../common/roles.guard.js";
 
 const ScheduleJobSchema = z.object({

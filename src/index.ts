@@ -19,6 +19,9 @@ import businessRoutes from "./modules/business/business.routes.js";
 import { shipmentsRoutes } from "./modules/api-gateway/shipments.routes.js";
 import { fleetRoutes } from "./modules/fleet/fleet.routes.js";
 import { startScheduler } from "./modules/fleet/scheduler.js";
+import { catalogRoutes } from "./modules/catalog/catalog.routes.js";
+import { darkstoreRoutes } from "./modules/darkstore/darkstore.routes.js";
+import { ordersRoutes } from "./modules/orders/orders.routes.js";
 
 const app = Fastify({
   logger: false, // We use our own pino logger
@@ -95,6 +98,9 @@ await app.register(adminRoutes);
 await app.register(businessRoutes);
 await app.register(shipmentsRoutes);
 await app.register(fleetRoutes);
+await app.register(catalogRoutes);
+await app.register(darkstoreRoutes);
+await app.register(ordersRoutes);
 
 // --- Start Background Services ---
 startScheduler();
