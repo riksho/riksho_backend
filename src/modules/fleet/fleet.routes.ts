@@ -20,7 +20,9 @@ const ScheduleJobSchema = z.object({
 
 export async function fleetRoutes(app: FastifyInstance) {
   // POST /fleet/schedule — Schedule a recurring or deferred job (for Web Portal authenticated via JWT)
-  app.post("/fleet/schedule", { preHandler: [authGuard, roleGuard("business")] }, async (request, reply) => {
+  // NOTE: role stays "customer" for business accounts (only account_type flips to
+  // 'business'); ownership is enforced via the businesses lookup below.
+  app.post("/fleet/schedule", { preHandler: [authGuard, roleGuard("customer")] }, async (request, reply) => {
     const businessId = request.user!.id; // For simplicity, assume user.id maps to business owner, but wait!
     // We should fetch the actual business_id for the user
     const { data: business } = await supabaseAdmin
@@ -52,7 +54,7 @@ export async function fleetRoutes(app: FastifyInstance) {
   });
 
   // GET /fleet/schedule - Get all scheduled jobs for the business
-  app.get("/fleet/schedule", { preHandler: [authGuard, roleGuard("business")] }, async (request, reply) => {
+  app.get("/fleet/schedule", { preHandler: [authGuard, roleGuard("customer")] }, async (request, reply) => {
     const businessId = request.user!.id; 
     const { data: business } = await supabaseAdmin
       .from("businesses")

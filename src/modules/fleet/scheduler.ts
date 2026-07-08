@@ -2,7 +2,7 @@ import { supabaseAdmin } from "../../config/supabase.js";
 import { logger } from "../../common/logger.js";
 import { findNearbyDrivers } from "../matching/matching.service.js";
 import { calculateFare } from "../fares/fares.config.js";
-import cronParser from "cron-parser";
+import { CronExpressionParser } from "cron-parser";
 
 /**
  * A lightweight scheduler that polls the `scheduled_jobs` table and 
@@ -41,7 +41,7 @@ export function startScheduler() {
             fareEst = calculateFare(job.vehicle_type as any, distanceM, durationS, 1.0, job.cargo_weight_kg);
           }
         } catch (e) {
-          logger.warn("OSRM calculation failed in scheduler, defaulting to 0", e);
+          logger.warn({ err: e }, "OSRM calculation failed in scheduler, defaulting to 0");
         }
 
         // 2. Insert into rides table
@@ -79,8 +79,8 @@ export function startScheduler() {
             .eq("id", job.id);
         } else {
           try {
-            // Calculate next run time using cron parser
-            const interval = cronParser.parseExpression(job.cron_expression);
+            // Calculate next run time using cron parser (v5 API)
+            const interval = CronExpressionParser.parse(job.cron_expression);
             const nextRun = interval.next().toISOString();
             await supabaseAdmin
               .from("scheduled_jobs")
