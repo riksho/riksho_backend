@@ -15,6 +15,17 @@ ALTER TABLE rides ADD CONSTRAINT check_job_ownership CHECK (
   customer_id IS NOT NULL OR business_id IS NOT NULL OR order_id IS NOT NULL
 );
 
+-- 2b. Widen the users.role CHECK to include the two new operational roles.
+--     Migration 003 pinned role to (customer, driver, admin), so any endpoint
+--     gated on requireRole("store_ops") — the dark-store fulfilment queue — or
+--     requireRole("business_owner") — the entire /business/portal/* surface —
+--     was UNREACHABLE: the column can never legally hold those values, and the
+--     guard reads role from the users table. Without this, only an 'admin'
+--     account can work the ops queue or open the business portal.
+ALTER TABLE public.users DROP CONSTRAINT IF EXISTS users_role_check;
+ALTER TABLE public.users ADD CONSTRAINT users_role_check
+  CHECK (role IN ('customer', 'driver', 'admin', 'store_ops', 'business_owner'));
+
 -- 3. Quick delivery SLA timestamps on the order (replaces the planned 008 rider_id;
 --    ride_id already links the delivery ride from migration 007).
 ALTER TABLE quick_orders ADD COLUMN IF NOT EXISTS packed_at timestamptz;

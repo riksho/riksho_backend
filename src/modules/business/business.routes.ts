@@ -174,7 +174,11 @@ export default async function businessRoutes(app: FastifyInstance) {
 
   // ─── Portal-specific endpoints ─────────────────────────────────────
 
-  const portalGuard = { preHandler: [authGuard, requireRole("business_owner", "admin")] };
+  // Business accounts keep role='customer' (only account_type flips to 'business');
+  // ownership is enforced via getBusinessForUser below, which returns null for
+  // non-business callers so the endpoints degrade to empty results rather than 403.
+  // 'business_owner' is accepted too for forward-compat if that role is ever minted.
+  const portalGuard = { preHandler: [authGuard, requireRole("customer", "business_owner", "admin")] };
 
   // GET /business/portal/me — Portal identity check (returns role + business info)
   app.get("/business/portal/me", portalGuard, async (request, reply) => {
