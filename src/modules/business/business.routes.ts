@@ -65,7 +65,7 @@ export default async function businessRoutes(app: FastifyInstance) {
   });
 
   // GET /business/me — Get business profile
-  app.get("/business/me", { preHandler: [authGuard, requireRole("customer")] }, async (request, reply) => {
+  app.get("/business/me", { preHandler: [authGuard, requireRole("customer", "business_owner", "admin")] }, async (request, reply) => {
     const user = (request as any).user;
     const customerId = user.id;
 
@@ -154,7 +154,7 @@ export default async function businessRoutes(app: FastifyInstance) {
   });
 
   // GET /business/jobs — This business's fleet job history.
-  app.get("/business/jobs", { preHandler: [authGuard, requireRole("customer")] }, async (request, reply) => {
+  app.get("/business/jobs", { preHandler: [authGuard, requireRole("customer", "business_owner", "admin")] }, async (request, reply) => {
     const userId = request.user!.id;
     const business = await getBusinessForUser(userId);
     if (!business) {
@@ -171,4 +171,83 @@ export default async function businessRoutes(app: FastifyInstance) {
     if (error) return reply.status(500).send({ error: "Failed to fetch jobs" });
     return reply.send({ jobs: jobs || [] });
   });
+
+  // ─── Portal-specific endpoints ─────────────────────────────────────
+
+  const portalGuard = { preHandler: [authGuard, requireRole("business_owner", "admin")] };
+
+  // GET /business/portal/me — Portal identity check (returns role + business info)
+  app.get("/business/portal/me", portalGuard, async (request, reply) => {
+    const userId = request.user!.id;
+    const business = await getBusinessForUser(userId);
+
+    return reply.send({
+      id: userId,
+      email: request.user!.email,
+      role: "business_owner",
+      business: business || null,
+    });
+  });
+
+  // GET /business/portal/stats — Real dashboard numbers
+  app.get("/business/portal/stats", portalGuard, async (request, reply) => {
+    const userId = request.user!.id;
+    const business = await getBusinessForUser(userId);
+    if (!business) {
+      return reply.send({ active: 0, completed: 0, scheduled: 0, spend: 0 });
+    }
+
+    const now = new Date();
+    const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).toISOString();
+
+    const [activeRes, completedRes, scheduledRes, spendRes] = await Promise.all([
+      supabaseAdmin.from("rides")
+        .select("id", { count: "exact", head: true })
+        .eq("business_id", business.id)
+        .in("status", ["requested", "accepted", "arriving", "in_progress"]),
+      supabaseAdmin.from("rides")
+        .select("id", { count: "exact", head: true })
+        .eq("business_id", business.id)
+        .eq("status", "completed")
+        .gte("completed_at", monthStart),
+      supabaseAdmin.from("scheduled_jobs")
+        .select("id", { count: "exact", head: true })
+        .eq("business_id", business.id)
+        .eq("is_active", true),
+      supabaseAdmin.from("rides")
+        .select("fare_final")
+        .eq("business_id", business.id)
+        .eq("status", "completed")
+        .gte("completed_at", monthStart),
+    ]);
+
+    const totalSpend = (spendRes.data || []).reduce((sum: number, r: any) => sum + (r.fare_final || 0), 0);
+
+    return reply.send({
+      active: activeRes.count ?? 0,
+      completed: completedRes.count ?? 0,
+      scheduled: scheduledRes.count ?? 0,
+      spend: totalSpend,
+    });
+  });
+
+  // GET /business/portal/shipments — Real shipments list
+  app.get("/business/portal/shipments", portalGuard, async (request, reply) => {
+    const userId = request.user!.id;
+    const business = await getBusinessForUser(userId);
+    if (!business) {
+      return reply.send({ shipments: [] });
+    }
+
+    const { data, error } = await supabaseAdmin
+      .from("rides")
+      .select("id, origin_address, dest_address, vehicle_type, status, fare_estimate, fare_final, cargo_weight_kg, created_at, completed_at, service_type")
+      .eq("business_id", business.id)
+      .order("created_at", { ascending: false })
+      .limit(50);
+
+    if (error) return reply.status(500).send({ error: "Failed to fetch shipments" });
+    return reply.send({ shipments: data || [] });
+  });
 }
+
