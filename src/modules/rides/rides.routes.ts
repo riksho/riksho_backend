@@ -100,6 +100,7 @@ export async function ridesRoutes(app: FastifyInstance) {
     const estimates = {
       bike: calculateFare("bike", route.distance, route.duration),
       auto: calculateFare("auto", route.distance, route.duration),
+      e_rickshaw: calculateFare("e_rickshaw", route.distance, route.duration),
       car: calculateFare("car", route.distance, route.duration),
     };
 

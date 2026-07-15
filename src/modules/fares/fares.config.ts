@@ -24,6 +24,13 @@ export const FARE_CONFIG = {
     minimum_fare: 80,
     surge_multiplier: 1.0,
   },
+  e_rickshaw: {
+    base_fare: 25,
+    per_km: 10,
+    per_min: 1.2,
+    minimum_fare: 40,
+    surge_multiplier: 1.0,
+  },
   tempo: {
     base_fare: 150,
     per_km: 25,
