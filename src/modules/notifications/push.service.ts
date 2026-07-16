@@ -1,6 +1,6 @@
-import fetch from "node-fetch";
-import { supabaseAdmin } from "../../common/supabase";
-import { logger } from "../../common/logger";
+import { supabaseAdmin } from "../../config/supabase.js";
+import { logger } from "../../common/logger.js";
+
 
 interface PushData {
   title: string;
