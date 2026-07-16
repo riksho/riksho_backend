@@ -49,11 +49,28 @@ export async function authGuard(request: FastifyRequest, reply: FastifyReply) {
       .eq("id", data.user.id)
       .single();
 
+    let resolvedRole = profile?.role || data.user.user_metadata?.role || "customer";
+
+    // Auto-repair role if user registered as driver before role fixes
+    if (resolvedRole === "customer") {
+      const { data: driverProfile } = await supabaseAdmin
+        .from("drivers")
+        .select("id")
+        .eq("id", data.user.id)
+        .single();
+      
+      if (driverProfile) {
+        resolvedRole = "driver";
+        // Fire and forget auto-repair in DB
+        supabaseAdmin.from("users").update({ role: "driver" }).eq("id", data.user.id).then();
+      }
+    }
+
     request.user = {
       id: data.user.id,
       phone: data.user.phone,
       email: data.user.email,
-      role: profile?.role || data.user.user_metadata?.role || "customer",
+      role: resolvedRole,
     };
   } catch (err) {
     return reply.status(401).send({

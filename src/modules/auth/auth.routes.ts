@@ -44,6 +44,7 @@ export async function authRoutes(app: FastifyInstance) {
       .upsert({
         id: userId,
         ...(body.name && { name: body.name }),
+        ...(body.isDriver && { role: "driver" }),
         phone: request.user!.phone,
         updated_at: new Date().toISOString(),
       })
