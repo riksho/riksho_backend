@@ -49,6 +49,11 @@ export const DriverRegisterSchema = z.object({
   capacity_kg: z.number().int().optional(),
 });
 
+export const DriverDocumentSchema = z.object({
+  doc_type: z.enum(["license", "rc", "insurance", "vehicle_photo", "profile_photo"]),
+  storage_path: z.string().min(1),
+});
+
 // ---- Business ----
 
 export const BusinessRegisterSchema = z.object({

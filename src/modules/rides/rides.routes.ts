@@ -265,7 +265,7 @@ export async function ridesRoutes(app: FastifyInstance) {
 
     const { data, error } = await supabaseAdmin
       .from("rides")
-      .update({ status: "arriving" })
+      .update({ status: "arriving", arrived_at: new Date().toISOString() })
       .eq("id", id)
       .eq("driver_id", driverId)
       .eq("status", "accepted")

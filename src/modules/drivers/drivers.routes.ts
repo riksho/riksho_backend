@@ -2,7 +2,7 @@ import type { FastifyInstance } from "fastify";
 import { authGuard } from "../../common/auth.guard.js";
 import { requireRole } from "../../common/roles.guard.js";
 import { supabaseAdmin } from "../../config/supabase.js";
-import { DriverLocationSchema, DriverRegisterSchema } from "../../common/schemas.js";
+import { DriverLocationSchema, DriverRegisterSchema, DriverDocumentSchema } from "../../common/schemas.js";
 
 export async function driversRoutes(app: FastifyInstance) {
   // POST /drivers/online — Go online (drivers only)
@@ -151,15 +151,18 @@ export async function driversRoutes(app: FastifyInstance) {
       return reply.status(500).send({ error: "Failed to create driver" });
     }
 
-    // Create vehicle
-    const { error: vehicleError } = await supabaseAdmin.from("vehicles").insert({
-      driver_id: driverId,
-      type: body.vehicle_type,
-      plate: body.plate,
-      model: body.model,
-      capacity_kg: body.capacity_kg ?? null, // needed for fleet capacity matching
-      seats: body.seats || (body.vehicle_type === "bike" ? 1 : body.vehicle_type === "auto" ? 3 : 4),
-    });
+    // Create or update vehicle
+    const { error: vehicleError } = await supabaseAdmin.from("vehicles").upsert(
+      {
+        driver_id: driverId,
+        type: body.vehicle_type,
+        plate: body.plate,
+        model: body.model,
+        capacity_kg: body.capacity_kg ?? null,
+        seats: body.seats || (body.vehicle_type === "bike" ? 1 : body.vehicle_type === "auto" ? 3 : 4),
+      },
+      { onConflict: "driver_id" }
+    );
 
     if (vehicleError) {
       return reply.status(500).send({ error: "Failed to create vehicle" });
@@ -177,5 +180,44 @@ export async function driversRoutes(app: FastifyInstance) {
       .upsert({ id: driverId, role: "driver", phone: request.user!.phone }, { onConflict: "id" });
 
     return reply.status(201).send({ success: true, message: "Driver registered. Pending verification." });
+  });
+
+  // POST /drivers/documents — Upload KYC document
+  app.post("/drivers/documents", { preHandler: [authGuard] }, async (request, reply) => {
+    const driverId = request.user!.id;
+    const body = DriverDocumentSchema.parse(request.body);
+
+    const { error } = await supabaseAdmin.from("driver_documents").upsert(
+      {
+        driver_id: driverId,
+        doc_type: body.doc_type,
+        storage_path: body.storage_path,
+        status: "pending",
+        updated_at: new Date().toISOString(),
+      },
+      { onConflict: "driver_id, doc_type" }
+    );
+
+    if (error) {
+      return reply.status(500).send({ error: "Failed to save document record" });
+    }
+
+    return reply.send({ success: true });
+  });
+
+  // GET /drivers/documents — Get driver documents
+  app.get("/drivers/documents", { preHandler: [authGuard] }, async (request, reply) => {
+    const driverId = request.user!.id;
+
+    const { data, error } = await supabaseAdmin
+      .from("driver_documents")
+      .select("*")
+      .eq("driver_id", driverId);
+
+    if (error) {
+      return reply.status(500).send({ error: "Failed to fetch documents" });
+    }
+
+    return reply.send(data);
   });
 }
