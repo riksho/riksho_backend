@@ -4,6 +4,7 @@ import { supabaseAdmin } from "../../config/supabase.js";
 import { ProfileUpdateSchema } from "../../common/schemas.js";
 
 export async function authRoutes(app: FastifyInstance) {
+
   // GET /me — Return authenticated user's profile
   app.get("/me", { preHandler: [authGuard] }, async (request, reply) => {
     const userId = request.user!.id;
