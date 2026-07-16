@@ -38,7 +38,8 @@ export async function authRoutes(app: FastifyInstance) {
     const userId = request.user!.id;
     const body = ProfileUpdateSchema.parse(request.body ?? {});
 
-    const { data, error } = await supabaseAdmin
+    // 1. Upsert into users (passenger profile)
+    const { data: userData, error: userError } = await supabaseAdmin
       .from("users")
       .upsert({
         id: userId,
@@ -49,10 +50,28 @@ export async function authRoutes(app: FastifyInstance) {
       .select()
       .single();
 
-    if (error) {
-      return reply.status(500).send({ error: "Failed to update profile" });
+    if (userError) {
+      return reply.status(500).send({ error: "Failed to update user profile" });
     }
 
-    return reply.send(data);
+    // 2. If registering from Partner App, also upsert into drivers
+    if (body.isDriver) {
+      const { error: driverError } = await supabaseAdmin
+        .from("drivers")
+        .upsert({
+          id: userId,
+          name: body.name || "Driver", // Drivers table requires a name
+          phone: request.user!.phone,
+          status: "offline",
+          updated_at: new Date().toISOString(),
+        });
+
+      if (driverError) {
+        request.log.error("Failed to dual-register driver:", driverError);
+        // We don't fail the request here, but log it so the user still gets logged in
+      }
+    }
+
+    return reply.send(userData);
   });
 }

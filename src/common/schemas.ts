@@ -73,6 +73,7 @@ export const ProfileUpdateSchema = z.object({
   name: z.string().min(1).optional(),
   phone: z.string().optional(),
   avatar_url: z.string().url().optional(),
+  isDriver: z.boolean().optional(),
 });
 
 // ---- Push ----
