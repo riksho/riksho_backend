@@ -7,6 +7,7 @@ import { supabaseAdmin } from "../../config/supabase.js";
 import { calculateFare, type VehicleType } from "../fares/fares.config.js";
 import { findNearbyDrivers } from "../matching/matching.service.js";
 import { broadcastRideStatus, broadcastOrderStatus } from "../matching/broadcast.service.js";
+import { sendPush } from "../notifications/push.service.js";
 import { fireWebhook } from "../notifications/webhook.service.js";
 import {
   RideRequestSchema,
@@ -254,6 +255,14 @@ export async function ridesRoutes(app: FastifyInstance) {
     // Broadcast to customer: driver accepted
     broadcastRideStatus(id, "accepted", { driver_id: driverId });
     notifyBusinessWebhook(id, "accepted", { driver_id: driverId }).catch(() => {});
+    
+    if (data.customer_id) {
+      sendPush([data.customer_id], {
+        title: "Driver Accepted",
+        body: "Your driver is on the way to the pickup location.",
+        data: { ride_id: id, status: "accepted" },
+      }).catch(() => {});
+    }
 
     return reply.send({ status: "accepted", ride: data });
   });
@@ -282,6 +291,14 @@ export async function ridesRoutes(app: FastifyInstance) {
     broadcastRideStatus(id, "arriving", {});
     syncQuickOrder(id, "arriving").catch(() => {});
     notifyBusinessWebhook(id, "arriving").catch(() => {});
+    
+    if (data.customer_id) {
+      sendPush([data.customer_id], {
+        title: "Driver Arrived",
+        body: "Your driver has arrived at the pickup location.",
+        data: { ride_id: id, status: "arriving" },
+      }).catch(() => {});
+    }
 
     return reply.send({ status: "arriving" });
   });
@@ -310,6 +327,14 @@ export async function ridesRoutes(app: FastifyInstance) {
     broadcastRideStatus(id, "in_progress", {});
     syncQuickOrder(id, "in_progress").catch(() => {});
     notifyBusinessWebhook(id, "in_progress").catch(() => {});
+    
+    if (data.customer_id) {
+      sendPush([data.customer_id], {
+        title: "Trip Started",
+        body: "Your trip has started.",
+        data: { ride_id: id, status: "in_progress" },
+      }).catch(() => {});
+    }
 
     return reply.send({ status: "in_progress" });
   });
@@ -399,8 +424,49 @@ export async function ridesRoutes(app: FastifyInstance) {
     broadcastRideStatus(id, "completed", { fare_final: fareFinal });
     syncQuickOrder(id, "completed").catch(() => {});
     notifyBusinessWebhook(id, "completed", { fare_final: fareFinal }).catch(() => {});
+    
+    if (data.customer_id) {
+      sendPush([data.customer_id], {
+        title: "Trip Completed",
+        body: "You have arrived at your destination.",
+        data: { ride_id: id, status: "completed" },
+      }).catch(() => {});
+    }
 
     return reply.send({ status: "completed", fare_final: fareFinal });
+  });
+
+  // POST /rides/:id/pod — Upload Proof of Delivery (Fleet/Quick)
+  app.post("/rides/:id/pod", { preHandler: [authGuard, requireRole("driver")] }, async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const driverId = request.user!.id;
+    const { pod_path } = request.body as any;
+
+    if (!pod_path) {
+      return reply.status(400).send({ error: "pod_path is required" });
+    }
+
+    // Verify driver owns this ride
+    const { data: ride } = await supabaseAdmin
+      .from("rides")
+      .select("driver_id, status")
+      .eq("id", id)
+      .single();
+
+    if (!ride || ride.driver_id !== driverId) {
+      return reply.status(403).send({ error: "Not authorized for this ride" });
+    }
+
+    const { error } = await supabaseAdmin
+      .from("rides")
+      .update({ pod_path })
+      .eq("id", id);
+
+    if (error) {
+      return reply.status(500).send({ error: "Failed to save POD" });
+    }
+
+    return reply.send({ success: true });
   });
 
   // Helper to sync ride state changes to the linked quick_order (if applicable)

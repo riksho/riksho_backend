@@ -1,6 +1,7 @@
 import { supabaseAdmin } from "../../config/supabase.js";
 import { logger } from "../../common/logger.js";
 import { broadcastRideOffer } from "./broadcast.service.js";
+import { sendPush } from "../notifications/push.service.js";
 
 const SEARCH_RADIUS_KM = 5;
 const MAX_DRIVERS = 10;
@@ -103,6 +104,14 @@ export async function findNearbyDrivers(
       distance_km: rideData?.distance_m ? +(rideData.distance_m / 1000).toFixed(1) : undefined,
     });
   }
+
+  // Send background pushes to drivers
+  const title = rideData?.service_type === 'fleet' ? '🚚 New Fleet Job!' : (rideData?.service_type === 'quick' ? '⚡ Quick Delivery!' : '🚗 New Ride Request!');
+  await sendPush(onlineDrivers.map((d) => d.id), {
+    title,
+    body: `Pickup: ${rideData?.origin_address || 'Nearby'}`,
+    data: { ride_id: rideId, service_type: rideData?.service_type },
+  });
 
   logger.info({ rideId, driverCount: onlineDrivers.length }, "Sent ride offers to nearby drivers");
 }

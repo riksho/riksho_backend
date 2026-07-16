@@ -73,36 +73,43 @@ export async function driversRoutes(app: FastifyInstance) {
     const { range } = request.query as { range?: string };
 
     let query = supabaseAdmin
-      .from("rides")
-      .select("fare_final, completed_at, payment_method")
-      .eq("driver_id", driverId)
-      .eq("status", "completed")
-      .not("fare_final", "is", null);
+      .from("earnings")
+      .select("gross, commission, net, payment_method, created_at")
+      .eq("driver_id", driverId);
 
     // Filter by date range
     if (range === "today") {
       const today = new Date();
       today.setHours(0, 0, 0, 0);
-      query = query.gte("completed_at", today.toISOString());
+      query = query.gte("created_at", today.toISOString());
     } else if (range === "week") {
       const weekAgo = new Date();
       weekAgo.setDate(weekAgo.getDate() - 7);
       weekAgo.setHours(0, 0, 0, 0);
-      query = query.gte("completed_at", weekAgo.toISOString());
+      query = query.gte("created_at", weekAgo.toISOString());
+    } else if (range === "month") {
+      const monthAgo = new Date();
+      monthAgo.setMonth(monthAgo.getMonth() - 1);
+      monthAgo.setHours(0, 0, 0, 0);
+      query = query.gte("created_at", monthAgo.toISOString());
     }
 
-    const { data: rides, error } = await query;
+    const { data: earnings, error } = await query;
 
     if (error) {
       return reply.status(500).send({ error: "Failed to fetch earnings" });
     }
 
-    const totalEarnings = (rides || []).reduce((sum, r) => sum + (r.fare_final || 0), 0);
-    const tripCount = (rides || []).length;
-    const cashTrips = (rides || []).filter((r) => r.payment_method === "cash").length;
+    const gross = (earnings || []).reduce((sum, e) => sum + (e.gross || 0), 0);
+    const commission = (earnings || []).reduce((sum, e) => sum + (e.commission || 0), 0);
+    const net = (earnings || []).reduce((sum, e) => sum + (e.net || 0), 0);
+    const tripCount = (earnings || []).length;
+    const cashTrips = (earnings || []).filter((e) => e.payment_method === "cash").length;
 
     return reply.send({
-      total_earnings: totalEarnings,
+      gross,
+      commission,
+      net,
       trip_count: tripCount,
       cash_trips: cashTrips,
       online_trips: tripCount - cashTrips,
@@ -220,4 +227,109 @@ export async function driversRoutes(app: FastifyInstance) {
 
     return reply.send(data);
   });
+
+  // GET /drivers/trips — Paginated completed rides history
+  app.get("/drivers/trips", { preHandler: [authGuard, requireRole("driver")] }, async (request, reply) => {
+    const driverId = request.user!.id;
+    const { limit = "10", cursor } = request.query as { limit?: string; cursor?: string };
+
+    let query = supabaseAdmin
+      .from("rides")
+      .select("id, origin_address, dest_address, fare_final, completed_at, service_type, rating")
+      .eq("driver_id", driverId)
+      .eq("status", "completed")
+      .order("completed_at", { ascending: false })
+      .limit(parseInt(limit, 10));
+
+    if (cursor) {
+      query = query.lt("completed_at", cursor);
+    }
+
+    const { data, error } = await query;
+    if (error) {
+      return reply.status(500).send({ error: "Failed to fetch trips" });
+    }
+
+    return reply.send(data);
+  });
+
+  // GET /drivers/payouts — Driver payout history and pending balance
+  app.get("/drivers/payouts", { preHandler: [authGuard, requireRole("driver")] }, async (request, reply) => {
+    const driverId = request.user!.id;
+
+    // Get payouts
+    const { data: payouts, error: payoutsError } = await supabaseAdmin
+      .from("driver_payouts")
+      .select("*")
+      .eq("driver_id", driverId)
+      .order("created_at", { ascending: false });
+
+    if (payoutsError) {
+      return reply.status(500).send({ error: "Failed to fetch payouts" });
+    }
+
+    // Calculate pending balance by summing earnings since the last payout
+    const lastPayoutDate = payouts?.[0]?.period_end || new Date(0).toISOString();
+    
+    const { data: pendingEarnings } = await supabaseAdmin
+      .from("earnings")
+      .select("net")
+      .eq("driver_id", driverId)
+      .gt("created_at", lastPayoutDate);
+
+    const pendingBalance = (pendingEarnings || []).reduce((sum, e) => sum + (e.net || 0), 0);
+
+    return reply.send({
+      payouts: payouts || [],
+      pending_balance: pendingBalance,
+    });
+  });
+
+  // PUT /drivers/profile — Edit driver profile
+  app.put("/drivers/profile", { preHandler: [authGuard, requireRole("driver")] }, async (request, reply) => {
+    const driverId = request.user!.id;
+    const { name, vehicle_model, vehicle_plate } = request.body as any;
+
+    const { error: driverError } = await supabaseAdmin
+      .from("drivers")
+      .update({ name })
+      .eq("id", driverId);
+
+    if (driverError) {
+      return reply.status(500).send({ error: "Failed to update driver details" });
+    }
+
+    if (vehicle_model || vehicle_plate) {
+      const { error: vehicleError } = await supabaseAdmin
+        .from("vehicles")
+        .update({ model: vehicle_model, plate: vehicle_plate })
+        .eq("driver_id", driverId);
+
+      if (vehicleError) {
+        return reply.status(500).send({ error: "Failed to update vehicle details" });
+      }
+    }
+
+    return reply.send({ success: true });
+  });
+
+  // GET /drivers/schedule — Assigned upcoming fleet/scheduled jobs
+  app.get("/drivers/schedule", { preHandler: [authGuard, requireRole("driver")] }, async (request, reply) => {
+    const driverId = request.user!.id;
+
+    const { data, error } = await supabaseAdmin
+      .from("scheduled_jobs")
+      .select("*")
+      .eq("assigned_driver_id", driverId)
+      .gte("scheduled_time", new Date().toISOString())
+      .order("scheduled_time", { ascending: true });
+
+    if (error) {
+      return reply.status(500).send({ error: "Failed to fetch scheduled jobs" });
+    }
+
+    return reply.send(data || []);
+  });
 }
+
+
