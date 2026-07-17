@@ -235,7 +235,7 @@ export async function driversRoutes(app: FastifyInstance) {
 
     let query = supabaseAdmin
       .from("rides")
-      .select("id, origin_address, dest_address, fare_final, completed_at, service_type, rating")
+      .select("id, origin_address, dest_address, fare_final, completed_at, service_type")
       .eq("driver_id", driverId)
       .eq("status", "completed")
       .order("completed_at", { ascending: false })
