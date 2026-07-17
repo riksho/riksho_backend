@@ -74,4 +74,83 @@ export async function fleetRoutes(app: FastifyInstance) {
 
     return reply.send({ jobs });
   });
+
+  // POST /fleet/jobs/:id/start — Driver materializes an assigned scheduled job into
+  // a live ride and starts navigation. Only the pre-assigned driver may start it.
+  // If the scheduler already materialized this job (ride_id set), that ride is returned
+  // instead of creating a duplicate.
+  app.post("/fleet/jobs/:id/start", { preHandler: [authGuard, roleGuard("driver")] }, async (request, reply) => {
+    const driverId = request.user!.id;
+    const { id } = request.params as { id: string };
+
+    const { data: job, error: jobErr } = await supabaseAdmin
+      .from("scheduled_jobs")
+      .select("*")
+      .eq("id", id)
+      .single();
+
+    if (jobErr || !job) return reply.status(404).send({ error: "Scheduled job not found" });
+    if (job.assigned_driver_id !== driverId) {
+      return reply.status(403).send({ error: "This job is not assigned to you" });
+    }
+
+    // Idempotency: if a ride already exists for this job, return it.
+    if (job.ride_id) {
+      return reply.send({ ride_id: job.ride_id, reused: true });
+    }
+
+    // Route + fare (OSRM, mirrors the scheduler path).
+    let distanceM = 0;
+    let durationS = 0;
+    try {
+      const osrmUrl = `https://router.project-osrm.org/route/v1/driving/${job.origin_lng},${job.origin_lat};${job.dest_lng},${job.dest_lat}?overview=false`;
+      const routeRes = await fetch(osrmUrl);
+      const routeData = (await routeRes.json()) as any;
+      if (routeData.routes?.length) {
+        distanceM = Math.round(routeData.routes[0].distance);
+        durationS = Math.round(routeData.routes[0].duration);
+      }
+    } catch {
+      // proceed with 0 distance
+    }
+    const { calculateFare } = await import("../fares/fares.config.js");
+    const fareEst = calculateFare(job.vehicle_type as any, distanceM, durationS, 1.0, job.cargo_weight_kg);
+
+    // Create the ride already accepted by this driver (they explicitly started it).
+    const { data: ride, error: rideErr } = await supabaseAdmin
+      .from("rides")
+      .insert({
+        driver_id: driverId,
+        business_id: job.business_id,
+        origin_lat: job.origin_lat,
+        origin_lng: job.origin_lng,
+        origin_address: job.origin_address,
+        dest_lat: job.dest_lat,
+        dest_lng: job.dest_lng,
+        dest_address: job.dest_address,
+        vehicle_type: job.vehicle_type,
+        service_type: "fleet",
+        cargo_weight_kg: job.cargo_weight_kg,
+        distance_m: distanceM,
+        duration_s: durationS,
+        fare_estimate: fareEst,
+        status: "accepted",
+        payment_method: "invoice",
+        payment_status: "pending",
+      })
+      .select()
+      .single();
+
+    if (rideErr || !ride) {
+      return reply.status(500).send({ error: "Failed to start job" });
+    }
+
+    // Link the ride back to the job and stop it re-firing.
+    await supabaseAdmin
+      .from("scheduled_jobs")
+      .update({ ride_id: ride.id, is_active: false })
+      .eq("id", id);
+
+    return reply.status(201).send({ ride_id: ride.id, status: ride.status, fare_estimate: fareEst });
+  });
 }
