@@ -23,6 +23,10 @@ import { catalogRoutes } from "./modules/catalog/catalog.routes.js";
 import { darkstoreRoutes } from "./modules/darkstore/darkstore.routes.js";
 import { ordersRoutes } from "./modules/orders/orders.routes.js";
 import { settlementRoutes } from "./modules/settlement/settlement.routes.js";
+import { fcmRoutes } from "./modules/notifications/fcm.routes.js";
+
+// Firebase init (side-effect: initialises firebase-admin)
+import "./config/firebase.js";
 
 const app = Fastify({
   logger: false, // We use our own pino logger
@@ -103,6 +107,7 @@ await app.register(catalogRoutes);
 await app.register(darkstoreRoutes);
 await app.register(ordersRoutes);
 await app.register(settlementRoutes);
+await app.register(fcmRoutes);
 
 // --- Start Background Services ---
 startScheduler();
