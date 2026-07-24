@@ -11,6 +11,15 @@ CREATE TABLE IF NOT EXISTS public.push_history (
     sent_at TIMESTAMPTZ DEFAULT NOW()
 );
 
+-- Create push_tokens table to store device FCM tokens
+CREATE TABLE IF NOT EXISTS public.push_tokens (
+    user_id UUID PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE,
+    token TEXT NOT NULL,
+    platform TEXT NOT NULL,
+    token_type TEXT DEFAULT 'fcm',
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
 -- Enable RLS
 ALTER TABLE public.push_history ENABLE ROW LEVEL SECURITY;
 
