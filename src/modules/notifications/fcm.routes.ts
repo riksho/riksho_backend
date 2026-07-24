@@ -96,7 +96,7 @@ export async function fcmRoutes(app: FastifyInstance) {
 
     if (error) {
       logger.error({ userId, error }, "Failed to register FCM token");
-      return reply.status(500).send({ error: "Failed to register token" });
+      return reply.status(500).send({ error: "Failed to register token", details: error.message, hint: error.hint });
     }
 
     return reply.send({ success: true });
