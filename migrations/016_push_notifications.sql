@@ -24,6 +24,7 @@ CREATE TABLE IF NOT EXISTS public.push_tokens (
 ALTER TABLE public.push_history ENABLE ROW LEVEL SECURITY;
 
 -- Allow read access for authenticated admins
+DROP POLICY IF EXISTS "Admins can view push history" ON public.push_history;
 CREATE POLICY "Admins can view push history" ON public.push_history
     FOR SELECT
     USING (
