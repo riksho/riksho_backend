@@ -325,6 +325,7 @@ export async function driversRoutes(app: FastifyInstance) {
       .order("scheduled_time", { ascending: true });
 
     if (error) {
+      console.error("Scheduled jobs error:", error);
       return reply.status(500).send({ error: "Failed to fetch scheduled jobs" });
     }
 
