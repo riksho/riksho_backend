@@ -285,3 +285,227 @@ Genuinely good, and I'd change none of it:
 ## One-line summary
 
 The plan is a solid skeleton with the right instincts about safety, ordering, and verification gates — but it audits the codebase as "✅ Built" in several places where the code is present yet **non-functional**, and it doesn't know that **the driver notification it's built around is broken today** (A1), that **one of four vehicle types can't be booked at all** (A2), or that **`ratings` is already done** (B1). Fix Phase 0, apply the Part B corrections, then execute the original phases as written.
+
+---
+---
+
+# IMPLEMENTATION LOG
+
+> Append-only record of what was actually changed, why, and what you must verify by hand. One section per fix.
+
+## Log 001 — A1 (push transport unified on FCM) + A2 (vehicle_type widened)
+
+**Date:** 2026-08-05
+**Status:** Code complete. **Migrations NOT yet applied** — see Step 1 of the manual checklist.
+**Build state:** `riksho_backend` → `npm run build` passes. `riksho_partner_android` → `npx tsc --noEmit` clean except one **pre-existing** error in `app/(auth)/onboarding/index.tsx:477` (`Timeout` vs `number`) that I did not touch. `riksho_android` → one **pre-existing** error in `components/RideLayout.tsx:42` (`height: string`), also untouched.
+
+### What changed — files
+
+#### New files (3)
+
+| File | Purpose |
+|------|---------|
+| `riksho_backend/migrations/018_widen_vehicle_type.sql` | **A2.** Drops the stale day-one `CHECK (vehicle_type IN ('bike','auto','car'))` on `rides` and `fare_config`, replaces it with all 7 types, and seeds the 4 missing `fare_config` rows. |
+| `riksho_backend/migrations/019_push_tokens_multidevice.sql` | **A1.** Repoints `push_tokens` PK from `user_id` → `(user_id, token)`, purges all non-FCM tokens, enforces `token_type = 'fcm'`, enables RLS. |
+| `riksho_partner_android/lib/pushHandlers.ts` | **A1.** FCM background + foreground message handlers, offer payload parsing, and Android notification-channel creation. |
+
+#### Deleted files (1)
+
+| File | Reason |
+|------|--------|
+| `riksho_partner_android/lib/push.ts` | The Expo-token registration path. This was the direct cause of A1 — it raced `lib/firebase.ts`'s FCM registration into the same single-row table. |
+
+#### Modified files (7)
+
+**Backend**
+
+- **`src/modules/notifications/push.service.ts`** — rewritten.
+  - `sendPush()` no longer posts to `https://exp.host/...`. It now selects tokens `WHERE token_type = 'fcm'` and delegates to `sendToTokens()`. **This is the actual A1 fix**: the old code handed FCM tokens to Expo's API, which rejected them, dropping every ride-offer push.
+  - Added `sendRideOfferPush()` — sends **data-only** high-priority messages for offers.
+  - Added `stringifyData()` — FCM requires all data values to be strings; numeric fields like `fare_estimate` would otherwise cause FCM to reject the whole send.
+  - Invalid tokens returned by FCM are now pruned automatically.
+
+- **`src/modules/notifications/fcm.service.ts`** — extended.
+  - `sendToTokens()` now returns `MulticastResult { successCount, failureCount, invalidTokens }` instead of a bare `number`, and **no longer throws** (it returns an empty result), so a push failure can't take down a ride-state transition.
+  - Added `sendDataMessage()` — data-only, `priority: high`, 60s TTL. No `notification` block, which is what lets the driver app render its own `OfferCard`.
+  - Added `pruneInvalidTokens()` and `PERMANENT_TOKEN_ERRORS`. Only genuinely dead tokens are deleted; transient errors (quota, unavailable) are **not** pruned, so a Firebase outage can't wipe the token table.
+
+- **`src/modules/matching/matching.service.ts`**
+  - Swapped `sendPush` → `sendRideOfferPush`.
+  - Extracted the duplicated offer payload into a single `offerPayload` object shared by both transports.
+  - **Behaviour fix:** the per-driver `broadcastRideOffer` calls were `await`ed inside a `for` loop, so offering to 10 drivers cost 10 sequential round trips and the 10th driver saw the offer measurably later than the 1st — skewing who could win the race to accept. Now `Promise.allSettled`.
+
+- **`src/modules/notifications/push.routes.ts`** — `POST /push/register` now returns **410 Gone** with a log line, instead of writing a token. Kept rather than deleted so an older installed build gets a clear signal instead of a 404 that looks like a routing bug.
+
+- **`src/modules/notifications/fcm.routes.ts`** — `onConflict` changed `"user_id"` → `"user_id,token"` to match the new composite PK. **This change is mandatory and coupled to migration 019** — the old `onConflict` would error against the new key. Also added a cleanup delete: if a driver logs out and another account logs in on the same phone, the previous user's row for that device token is removed, so the old account's offers stop arriving on a device it no longer owns.
+
+**Driver app**
+
+- **`app/index.tsx`** — removed the `registerForPushNotificationsAsync()` import and its `useEffect`. Replaced with a comment explaining why registration must not happen here.
+- **`app/_layout.tsx`** — registers `registerBackgroundMessageHandler()` at **module scope** (outside the component; Android runs it in a headless JS task with nothing mounted). Adds `ensureNotificationChannels()`, `listenForTokenRefresh()`, and swaps the inline `messaging().onMessage` for `registerForegroundMessageHandler()`. All three listeners are torn down on unmount. Also removed a **duplicate `"Jakarta-SemiBold"` key** in the `useFonts` map that was causing a TS error (pre-existing, one line, in a file I was already editing).
+- **`store/index.ts`** — added `useRideOfferStore`.
+- **`app/(root)/(tabs)/home.tsx)`** — offers now come from `useRideOfferStore` instead of local `useState`, so a push that arrives while this screen is unmounted isn't lost. `handleAcceptRide` captures `ride_id` into a local before awaiting (the old code read `currentOffer.ride_id` *after* clearing state, a latent race). Decline now calls `markHandled` so the push backstop can't re-pop a card the driver just dismissed.
+
+### Two design decisions worth knowing
+
+**1. Offers are data-only pushes; status updates stay visible pushes.**
+A push containing a `notification` block is rendered by Android's system tray while the app is backgrounded, and **your JS never runs**. That would give the driver a dead notification with no Accept button and no countdown. So ride offers carry data only, and `lib/pushHandlers.ts` decides what to draw. The four customer-facing status pushes (`accepted`/`arriving`/`in_progress`/`completed`) keep their `notification` block — those *should* appear in the tray.
+
+**2. Offers are deduped in the store, not in each listener.**
+The same offer now arrives twice by design — Realtime (fast, foreground) and FCM (survives backgrounding). `useRideOfferStore.receiveOffer()` is the single dedupe point, keyed on `ride_id` with a rolling 50-entry `handledRideIds` list. Whichever transport lands first wins; the loser is dropped silently. Without this you'd get two stacked offer cards.
+
+### 🐛 Bonus bug found and fixed while implementing A1
+
+**Every visible push notification was being silently dropped on Android 8+.**
+
+`fcm.service.ts` has always sent `android.notification.channelId: "riksho_general"`. I grepped both apps and both `AndroidManifest.xml` files: **that channel was never created anywhere.** On Android 8+ (API 26, i.e. essentially every device in service), a notification addressed to a nonexistent channel is discarded with no error and nothing in the tray.
+
+So `"Driver Accepted"`, `"Driver Arrived"`, `"Trip Started"`, `"Trip Completed"` — all four customer-facing pushes in `rides.routes.ts` — were going nowhere. This is separate from A1 and would have survived the A1 fix untouched.
+
+- **Driver app: FIXED.** `ensureNotificationChannels()` creates `riksho_general` with `AndroidImportance.HIGH` on startup.
+- **Customer app: NOT FIXED — needs a dependency.** `riksho_android` does not have `expo-notifications` in its `package.json` (verified: 0 hits), so there's no API available to create the channel. This is a real gap: **the customer is the primary recipient of all four status pushes.** Deliberately left out of A1/A2 rather than adding a dependency and a native rebuild outside the agreed scope. See "Deferred" below.
+
+### Deferred — not done, and why
+
+| Item | Why deferred |
+|------|--------------|
+| Customer-app notification channel | Requires adding `expo-notifications` to `riksho_android` + a native rebuild. Scope creep beyond A1/A2. **Do this before Phase 2** — until then, customer status pushes remain invisible on Android 8+. Alternative with no new dependency: add `<meta-data android:name="com.google.firebase.messaging.default_notification_channel_id" android:value="riksho_general"/>` to the manifest, or drop `channelId` from the backend payload so FCM uses the default channel. |
+| A3 (`offered_fare`) | Needs your product decision (honour it vs. remove the stepper). Documented in Part A. |
+| A4 (background location) | Largest of the four. Needs `expo-task-manager` added to the driver app, `FOREGROUND_SERVICE_LOCATION` + `ACCESS_BACKGROUND_LOCATION` permissions, and real-device testing. **Phase 3 and Phase 4 are blocked on this.** |
+| `notifee` full-screen offer alert | Not installed. Current implementation shows the offer card when the app is opened; it cannot light up a locked screen. Consider before launch — a driver with a pocketed phone still needs the *sound*, which the HIGH-importance channel now provides. |
+
+---
+
+## ✋ Manual verification — do these in order
+
+Steps 1–2 are **mandatory and blocking**. Nothing else works until the migrations are applied.
+
+### Step 1 — Apply the two migrations ⚠️ BLOCKING
+
+`npm run migrate` relies on an `exec_sql` RPC that may not exist in your project (the runner degrades to "paste it manually"). **Use the Supabase SQL Editor** to be certain:
+
+1. Supabase Dashboard → SQL Editor → New Query.
+2. Paste **all** of `migrations/018_widen_vehicle_type.sql` → Run. Expect `NOTICE: Dropped CHECK constraint on rides.vehicle_type: ...`.
+3. Paste **all** of `migrations/019_push_tokens_multidevice.sql` → Run. Expect `NOTICE: Dropped single-column primary key: push_tokens_pkey` and `Added composite primary key (user_id, token)`.
+
+Both are idempotent — re-running is safe.
+
+> **Expected and intentional:** migration 019 **deletes every existing push token.** Every user stops receiving pushes until they next open the app, which re-registers within a second. The old rows were an indistinguishable mix of Expo and FCM tokens; keeping them would preserve the bug.
+
+Confirm:
+
+```sql
+-- expect all 7 vehicle types
+SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE conname = 'rides_vehicle_type_check';
+
+-- expect: PRIMARY KEY (user_id, token)
+SELECT pg_get_constraintdef(con.oid) FROM pg_constraint con
+JOIN pg_class rel ON rel.oid = con.conrelid
+WHERE rel.relname = 'push_tokens' AND con.contype = 'p';
+
+-- expect only 'fcm', or zero rows right after migrating
+SELECT token_type, count(*) FROM public.push_tokens GROUP BY token_type;
+
+-- expect 7 rows
+SELECT vehicle_type FROM public.fare_config ORDER BY vehicle_type;
+```
+
+### Step 2 — Rebuild the driver app natively ⚠️ BLOCKING
+
+`setBackgroundMessageHandler` and the notification channel are **not** hot-reloadable. A Metro refresh is not enough:
+
+```bash
+cd riksho_partner_android
+npx expo run:android
+```
+
+Then **fully uninstall and reinstall** the driver app on your test device, so you get a fresh FCM token against the clean `push_tokens` table.
+
+### Step 3 — Token hygiene (proves A1's root cause is gone)
+
+1. Fresh-install driver app → log in.
+2. `SELECT user_id, token_type, platform, updated_at FROM push_tokens WHERE user_id = '<driver-uuid>';`
+   - ✅ Exactly **one** row, `token_type = 'fcm'`.
+   - ❌ If you see two rows, or `token_type` is NULL/`expo`, the Expo path is still alive somewhere.
+3. **Force-close and reopen the app 3 times.** Re-query after each.
+   - ✅ Same single row, `updated_at` bumping.
+   - ❌ **If the row's `token` flips between launches, A1 is not fixed.** That flip-flop was the entire bug.
+
+### Step 4 — 🎯 The one that matters: backgrounded driver receives the offer
+
+This is the behaviour you originally asked for, and the thing that did not work before.
+
+1. Driver app → **GO ONLINE**. Confirm `driver_locations` has a fresh row.
+2. **Press the device Home button.** Driver app fully backgrounded. Optionally turn the screen off.
+3. From the customer app: request a ride near the driver.
+4. ✅ **The driver device must react** — sound/vibration from the HIGH-importance channel.
+5. Open the driver app → the **OfferCard must be showing**, with correct pickup/drop addresses, fare, and distance.
+6. ✅ Accept it → navigates to the active trip, ride reaches `accepted`.
+
+> **Caveat, stated honestly:** on a **cold start** (app killed by the OS, not just backgrounded), Android may run the headless task in a fresh JS context and the store write can be lost. In that case the offer still arrives via the realtime re-subscribe on foreground (`home.tsx` `AppState` handler) as long as the ride is still `requested`. If you need a guaranteed lock-screen popup, that needs `notifee` — see Deferred.
+
+Check the backend log for `"Sent data-only ride offer push"` with `successCount` ≥ 1. If `successCount` is 0, the token is stale → redo Step 2.
+
+### Step 5 — A2: all four vehicle types actually book
+
+For **each** of bike, auto, **e_rickshaw**, car: pick it on find-ride → Find a Driver.
+
+- ✅ All four reach `status = 'requested'`.
+- Before this fix, **e_rickshaw returned a 500** ("Could not request ride") because of the stale CHECK constraint.
+
+```sql
+SELECT vehicle_type, status, created_at FROM rides ORDER BY created_at DESC LIMIT 4;
+```
+
+### Step 6 — No duplicate offer cards
+
+With the driver app **in the foreground**, request a ride. Both transports now deliver the same offer within ~1s of each other.
+
+- ✅ Exactly **one** OfferCard.
+- ❌ Two stacked cards ⇒ the store dedupe isn't being hit; check that the realtime listener calls `receiveOffer` and not `setCurrentOffer`.
+
+Then **Decline** an offer and immediately request another ride from the same customer:
+- ✅ The declined ride does **not** re-pop; the new one does.
+
+### Step 7 — Regression: the retired endpoint and multi-device
+
+1. `curl -X POST http://localhost:3001/push/register -H "Authorization: Bearer <token>" -H "Content-Type: application/json" -d '{"token":"x","platform":"android"}'`
+   - ✅ **410** with `ENDPOINT_RETIRED`. (A `500` means migration 019 didn't apply; a `200` means an old build of the route is still deployed.)
+2. If you have two devices: log the **same** driver into both. `SELECT count(*) FROM push_tokens WHERE user_id = '<uuid>';` → ✅ **2**. This was impossible before.
+3. Log a **different** account into one of those devices. → ✅ the first account's row for that token is gone (no cross-account offer leakage).
+
+### Step 8 — Regression: customer status pushes still flow
+
+Run one full ride: accept → arrived → start → complete.
+
+- ✅ Backend logs `"Sent push notifications via FCM"` at each transition, `successCount` ≥ 1.
+- ⚠️ **The customer will likely still not SEE these in the tray** — that's the deferred channel gap, not an A1 regression. Verify via the backend log, not the device. Confirm the in-app realtime status transitions still work (`ride/[rideId].tsx` banner updates), since that path is independent of push.
+
+### Step 9 — Close the CHECKLIST.md gap
+
+`CHECKLIST.md` still lists `npm run dev` + `/health` as unverified:
+
+```bash
+cd riksho_backend && npm run dev
+curl http://localhost:3001/health   # expect 200
+```
+
+---
+
+### Rollback
+
+If Step 4 or 5 fails and you need to get back to the previous state fast:
+
+```sql
+-- Revert 019 (back to single-token-per-user)
+ALTER TABLE public.push_tokens DROP CONSTRAINT push_tokens_token_type_check;
+ALTER TABLE public.push_tokens ALTER COLUMN token_type DROP NOT NULL;
+DELETE FROM public.push_tokens a USING public.push_tokens b
+  WHERE a.ctid < b.ctid AND a.user_id = b.user_id;   -- keep one row per user
+ALTER TABLE public.push_tokens DROP CONSTRAINT push_tokens_pkey;
+ALTER TABLE public.push_tokens ADD PRIMARY KEY (user_id);
+```
+
+`018` needs no rollback — widening a CHECK constraint cannot invalidate existing rows. Reverting it would only re-break e_rickshaw.
+
+For the code, revert these three commits-worth of changes together: `push.service.ts` + `fcm.service.ts` + `fcm.routes.ts` are **mutually dependent** (the `onConflict` key, the `MulticastResult` return type, and the `token_type` filter). Reverting one alone will not compile.

@@ -1,7 +1,7 @@
 import { supabaseAdmin } from "../../config/supabase.js";
 import { logger } from "../../common/logger.js";
 import { broadcastRideOffer } from "./broadcast.service.js";
-import { sendPush } from "../notifications/push.service.js";
+import { sendRideOfferPush } from "../notifications/push.service.js";
 
 const SEARCH_RADIUS_KM = 5;
 const MAX_DRIVERS = 10;
@@ -89,29 +89,37 @@ export async function findNearbyDrivers(
     .eq("id", rideId)
     .single();
 
-  // Broadcast ride offer to each driver via REST broadcast (no subscribe needed)
-  for (const driver of onlineDrivers) {
-    await broadcastRideOffer(driver.id, {
-      ride_id: rideId,
-      origin_lat: lat,
-      origin_lng: lng,
-      origin_address: rideData?.origin_address,
-      dest_address: rideData?.dest_address,
-      vehicle_type: vehicleType,
-      service_type: rideData?.service_type,
-      cargo_weight_kg: rideData?.cargo_weight_kg,
-      fare_estimate: rideData?.fare_estimate,
-      distance_km: rideData?.distance_m ? +(rideData.distance_m / 1000).toFixed(1) : undefined,
-    });
-  }
+  // The offer payload is identical across both transports below, so build it once.
+  // Realtime is primary (instant, app in foreground); the data-only FCM push is the
+  // backstop that reaches a driver whose app is backgrounded or whose websocket died.
+  const offerPayload = {
+    ride_id: rideId,
+    origin_lat: lat,
+    origin_lng: lng,
+    origin_address: rideData?.origin_address,
+    dest_address: rideData?.dest_address,
+    vehicle_type: vehicleType,
+    service_type: rideData?.service_type,
+    cargo_weight_kg: rideData?.cargo_weight_kg,
+    fare_estimate: rideData?.fare_estimate,
+    distance_km: rideData?.distance_m ? +(rideData.distance_m / 1000).toFixed(1) : undefined,
+  };
 
-  // Send background pushes to drivers
-  const title = rideData?.service_type === 'fleet' ? '🚚 New Fleet Job!' : (rideData?.service_type === 'quick' ? '⚡ Quick Delivery!' : '🚗 New Ride Request!');
-  await sendPush(onlineDrivers.map((d) => d.id), {
-    title,
-    body: `Pickup: ${rideData?.origin_address || 'Nearby'}`,
-    data: { ride_id: rideId, service_type: rideData?.service_type },
-  });
+  // Broadcast ride offer to each driver via REST broadcast (no subscribe needed).
+  // Fire in parallel — these were previously awaited serially, so offering to 10
+  // drivers cost 10 sequential round trips to Supabase and the last driver saw the
+  // offer noticeably later than the first, skewing who could accept it.
+  await Promise.allSettled(
+    onlineDrivers.map((driver) => broadcastRideOffer(driver.id, offerPayload))
+  );
+
+  // Data-only, high-priority FCM push. Carries NO notification block on purpose so
+  // the driver app's own handler renders the OfferCard rather than Android drawing a
+  // dead tray notification with no accept button. See sendRideOfferPush().
+  await sendRideOfferPush(
+    onlineDrivers.map((d) => d.id),
+    offerPayload
+  );
 
   logger.info({ rideId, driverCount: onlineDrivers.length }, "Sent ride offers to nearby drivers");
 }

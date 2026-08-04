@@ -93,12 +93,49 @@ export async function sendToTopic(topic: string, payload: PushPayload): Promise<
   }
 }
 
+/** Result of a multicast send, including tokens FCM rejected as permanently dead. */
+export interface MulticastResult {
+  successCount: number;
+  failureCount: number;
+  /** Tokens FCM reported as unregistered/invalid — safe to delete from the DB. */
+  invalidTokens: string[];
+}
+
 /**
- * Send a push notification to specific device tokens.
+ * FCM error codes that mean "this token will never work again".
+ * Anything else (quota, internal, unavailable) is transient — do NOT prune on those,
+ * or a temporary Firebase outage would wipe every token in the database.
  */
-export async function sendToTokens(tokens: string[], payload: PushPayload): Promise<number> {
+const PERMANENT_TOKEN_ERRORS = new Set([
+  "messaging/registration-token-not-registered",
+  "messaging/invalid-registration-token",
+  "messaging/invalid-argument",
+]);
+
+function collectInvalidTokens(
+  response: { responses: Array<{ success: boolean; error?: { code?: string } }> },
+  tokens: string[]
+): string[] {
+  const invalid: string[] = [];
+  response.responses.forEach((r, i) => {
+    if (!r.success && r.error?.code && PERMANENT_TOKEN_ERRORS.has(r.error.code)) {
+      invalid.push(tokens[i]);
+    }
+  });
+  return invalid;
+}
+
+/**
+ * Send a *visible* notification to specific device tokens.
+ * Renders in the system tray when the app is backgrounded.
+ */
+export async function sendToTokens(
+  tokens: string[],
+  payload: PushPayload
+): Promise<MulticastResult> {
+  const empty: MulticastResult = { successCount: 0, failureCount: 0, invalidTokens: [] };
   const messaging = getMessaging();
-  if (!messaging || tokens.length === 0) return 0;
+  if (!messaging || tokens.length === 0) return empty;
 
   try {
     const message: any = {
@@ -127,10 +164,85 @@ export async function sendToTokens(tokens: string[], payload: PushPayload): Prom
       { success: response.successCount, failure: response.failureCount },
       "FCM multicast sent"
     );
-    return response.successCount;
+
+    return {
+      successCount: response.successCount,
+      failureCount: response.failureCount,
+      invalidTokens: collectInvalidTokens(response, tokens),
+    };
   } catch (err: any) {
+    // Best-effort transport: callers treat push as non-fatal, so swallow rather
+    // than throw and risk taking down a ride-state transition.
     logger.error({ err: err.message }, "Failed to send FCM multicast");
-    throw err;
+    return empty;
+  }
+}
+
+/**
+ * Send a *data-only* high-priority message to specific device tokens.
+ *
+ * No `notification` block, so Android does NOT auto-render it in the tray —
+ * the app's own handler receives it and decides what to draw. This is what makes
+ * the driver's custom ride-offer popup (with its countdown and accept/decline
+ * buttons) possible while the app is backgrounded.
+ *
+ * `android.priority: "high"` asks FCM to wake the device immediately rather than
+ * batching the message until the next maintenance window. Required for offers,
+ * which are worthless if they arrive two minutes late.
+ */
+export async function sendDataMessage(
+  tokens: string[],
+  data: Record<string, string>
+): Promise<MulticastResult> {
+  const empty: MulticastResult = { successCount: 0, failureCount: 0, invalidTokens: [] };
+  const messaging = getMessaging();
+  if (!messaging || tokens.length === 0) return empty;
+
+  try {
+    const response = await messaging.sendEachForMulticast({
+      tokens,
+      data,
+      android: {
+        priority: "high" as const,
+        // 60s TTL: a ride offer that could not be delivered within a minute is
+        // stale — the ride has almost certainly been taken or cancelled by then.
+        ttl: 60 * 1000,
+      },
+      apns: {
+        headers: { "apns-priority": "10", "apns-push-type": "background" },
+        payload: { aps: { contentAvailable: true } },
+      },
+    });
+
+    logger.info(
+      { success: response.successCount, failure: response.failureCount },
+      "FCM data-only message sent"
+    );
+
+    return {
+      successCount: response.successCount,
+      failureCount: response.failureCount,
+      invalidTokens: collectInvalidTokens(response, tokens),
+    };
+  } catch (err: any) {
+    logger.error({ err: err.message }, "Failed to send FCM data message");
+    return empty;
+  }
+}
+
+/**
+ * Delete tokens FCM has told us are permanently dead (app uninstalled, token
+ * rotated). Keeps the table from filling with garbage that slows every send.
+ */
+export async function pruneInvalidTokens(tokens: string[]): Promise<void> {
+  if (!tokens.length) return;
+
+  const { error } = await supabaseAdmin.from("push_tokens").delete().in("token", tokens);
+
+  if (error) {
+    logger.warn({ err: error.message, count: tokens.length }, "Failed to prune invalid tokens");
+  } else {
+    logger.info({ count: tokens.length }, "Pruned invalid FCM tokens");
   }
 }
 

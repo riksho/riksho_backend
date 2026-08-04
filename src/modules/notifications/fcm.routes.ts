@@ -81,6 +81,9 @@ export async function fcmRoutes(app: FastifyInstance) {
     const userId = request.user!.id;
     const { token, platform } = FcmRegisterSchema.parse(request.body);
 
+    // onConflict targets the composite primary key (user_id, token) introduced by
+    // migration 019. This lets one user register several devices (phone + tablet)
+    // while re-registering the same device stays a cheap no-op update.
     const { error } = await supabaseAdmin
       .from("push_tokens")
       .upsert(
@@ -91,12 +94,25 @@ export async function fcmRoutes(app: FastifyInstance) {
           token_type: "fcm",
           updated_at: new Date().toISOString(),
         },
-        { onConflict: "user_id" }
+        { onConflict: "user_id,token" }
       );
 
     if (error) {
       logger.error({ userId, error }, "Failed to register FCM token");
       return reply.status(500).send({ error: "Failed to register token", details: error.message, hint: error.hint });
+    }
+
+    // A device token identifies a *device*, not an account. If a driver logs out and
+    // another account logs in on the same phone, the stale row would keep receiving
+    // the previous user's ride offers on that device. Drop any other user's claim.
+    const { error: cleanupError } = await supabaseAdmin
+      .from("push_tokens")
+      .delete()
+      .eq("token", token)
+      .neq("user_id", userId);
+
+    if (cleanupError) {
+      logger.warn({ userId, err: cleanupError.message }, "Failed to clear stale token owners");
     }
 
     return reply.send({ success: true });
