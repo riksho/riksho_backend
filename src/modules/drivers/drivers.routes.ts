@@ -321,8 +321,8 @@ export async function driversRoutes(app: FastifyInstance) {
       .from("scheduled_jobs")
       .select("*")
       .eq("assigned_driver_id", driverId)
-      .gte("scheduled_time", new Date().toISOString())
-      .order("scheduled_time", { ascending: true });
+      .gte("next_run_at", new Date().toISOString())
+      .order("next_run_at", { ascending: true });
 
     if (error) {
       console.error("Scheduled jobs error:", error);
