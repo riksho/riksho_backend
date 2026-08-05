@@ -53,7 +53,7 @@ export async function findNearbyDrivers(
   };
 
   const radii = [3000, 5000, 8000]; // 3km, 5km, 8km
-  const delays = [0, 15000, 15000]; // 0s, 15s, 15s
+  const delays = [0, 10000, 10000]; // 0s, 10s, 10s (cumulative: 0s, 10s, 20s)
 
   for (let i = 0; i < radii.length; i++) {
     if (delays[i] > 0) {

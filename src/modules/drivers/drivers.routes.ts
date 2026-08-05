@@ -159,7 +159,7 @@ export async function driversRoutes(app: FastifyInstance) {
     }
 
     // Create or update vehicle
-    const { error: vehicleError } = await supabaseAdmin.from("vehicles").upsert(
+    const { data: vehicleData, error: vehicleError } = await supabaseAdmin.from("vehicles").upsert(
       {
         driver_id: driverId,
         type: body.vehicle_type,
@@ -169,11 +169,14 @@ export async function driversRoutes(app: FastifyInstance) {
         seats: body.seats || (body.vehicle_type === "bike" ? 1 : body.vehicle_type === "auto" ? 3 : 4),
       },
       { onConflict: "driver_id" }
-    );
+    ).select().single();
 
-    if (vehicleError) {
+    if (vehicleError || !vehicleData) {
       return reply.status(500).send({ error: "Failed to create vehicle" });
     }
+
+    // P2 FIX: Update the driver's active_vehicle_id so they are visible to matching
+    await supabaseAdmin.from("drivers").update({ active_vehicle_id: vehicleData.id }).eq("id", driverId);
 
     // Update user role metadata + server-side role column
     await supabaseAdmin.auth.admin.updateUserById(driverId, {
