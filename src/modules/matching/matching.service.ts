@@ -2,6 +2,7 @@ import { supabaseAdmin } from "../../config/supabase.js";
 import { logger } from "../../common/logger.js";
 import { broadcastRideOffer } from "./broadcast.service.js";
 import { sendRideOfferPush } from "../notifications/push.service.js";
+import { effectiveFare } from "../fares/fares.config.js";
 
 const SEARCH_RADIUS_KM = 5;
 const MAX_DRIVERS = 10;
@@ -85,7 +86,7 @@ export async function findNearbyDrivers(
     // Fetch ride details to include in the offer
   const { data: rideData } = await supabaseAdmin
     .from("rides")
-    .select("origin_address, dest_address, fare_estimate, distance_m, service_type, cargo_weight_kg")
+    .select("origin_address, dest_address, fare_estimate, offered_fare, distance_m, service_type, cargo_weight_kg")
     .eq("id", rideId)
     .single();
 
@@ -101,7 +102,17 @@ export async function findNearbyDrivers(
     vehicle_type: vehicleType,
     service_type: rideData?.service_type,
     cargo_weight_kg: rideData?.cargo_weight_kg,
-    fare_estimate: rideData?.fare_estimate,
+    // `fare_estimate` here is the number the driver is being offered and will be
+    // paid — the customer's clamped bid when they made one, else our estimate
+    // (fix A3). Keeping the key name means the driver app's OfferCard, which
+    // already reads `fare_estimate`, needs no change to show the right figure.
+    fare_estimate: rideData ? effectiveFare(rideData) : undefined,
+    // Sent alongside so the offer card can flag an above-estimate bid as a
+    // sweetener ("₹120 · boosted") rather than silently showing a higher number.
+    base_estimate: rideData?.fare_estimate,
+    is_boosted: Boolean(
+      rideData?.offered_fare && Number(rideData.offered_fare) > Number(rideData.fare_estimate)
+    ),
     distance_km: rideData?.distance_m ? +(rideData.distance_m / 1000).toFixed(1) : undefined,
   };
 

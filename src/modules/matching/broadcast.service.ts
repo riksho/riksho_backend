@@ -88,7 +88,12 @@ export async function broadcastRideOffer(
     vehicle_type: string;
     service_type?: string;
     cargo_weight_kg?: number;
+    /** The fare the driver is offered — the customer's clamped bid, else the estimate. */
     fare_estimate?: number;
+    /** The raw server estimate, for comparison against a boosted bid (fix A3). */
+    base_estimate?: number;
+    /** True when the customer offered above the estimate. */
+    is_boosted?: boolean;
     distance_km?: number;
   }
 ): Promise<void> {

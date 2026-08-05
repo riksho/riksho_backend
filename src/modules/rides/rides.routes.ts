@@ -4,7 +4,12 @@ import { authGuard } from "../../common/auth.guard.js";
 import { requireRole } from "../../common/roles.guard.js";
 import { logger } from "../../common/logger.js";
 import { supabaseAdmin } from "../../config/supabase.js";
-import { calculateFare, type VehicleType } from "../fares/fares.config.js";
+import {
+  calculateFare,
+  clampOfferedFare,
+  effectiveFare,
+  type VehicleType,
+} from "../fares/fares.config.js";
 import { findNearbyDrivers } from "../matching/matching.service.js";
 import { broadcastRideStatus, broadcastOrderStatus } from "../matching/broadcast.service.js";
 import { sendPush } from "../notifications/push.service.js";
@@ -33,6 +38,22 @@ export async function ridesRoutes(app: FastifyInstance) {
     const route = routeData.routes[0];
     const fareEstimate = calculateFare(body.vehicle_type, route.distance, route.duration);
 
+    // Honour the customer's offered fare from the find-ride stepper (fix A3), but
+    // never trust it: clamp to 0.8x–2.0x of our own estimate. Bidding is a "move"
+    // concept only — fleet is contract-priced and quick is fee-priced, so we ignore
+    // any offered_fare on those and let them settle against fare_estimate.
+    const offeredFare =
+      body.offered_fare !== undefined && body.service_type === "move"
+        ? clampOfferedFare(body.offered_fare, fareEstimate)
+        : null;
+
+    if (offeredFare !== null && offeredFare !== Math.round(body.offered_fare!)) {
+      logger.info(
+        { customerId, requested: body.offered_fare, clamped: offeredFare, fareEstimate },
+        "Offered fare clamped to allowed band"
+      );
+    }
+
     // Create ride record
     const { data: ride, error } = await supabaseAdmin
       .from("rides")
@@ -51,6 +72,7 @@ export async function ridesRoutes(app: FastifyInstance) {
         distance_m: Math.round(route.distance),
         duration_s: Math.round(route.duration),
         fare_estimate: fareEstimate,
+        offered_fare: offeredFare,
         payment_method: "cash",
         payment_status: "pending",
       })
@@ -75,6 +97,10 @@ export async function ridesRoutes(app: FastifyInstance) {
       ride_id: ride.id,
       status: ride.status,
       fare_estimate: fareEstimate,
+      // Echo the *clamped* value so the customer app can correct its display if
+      // the stepper went outside the allowed band, rather than showing a fare the
+      // server never accepted.
+      offered_fare: offeredFare,
       distance_km: +(route.distance / 1000).toFixed(1),
       duration_min: Math.round(route.duration / 60),
     });
@@ -347,7 +373,7 @@ export async function ridesRoutes(app: FastifyInstance) {
 
     const { data: ride } = await supabaseAdmin
       .from("rides")
-      .select("fare_estimate, distance_m, duration_s, vehicle_type")
+      .select("fare_estimate, offered_fare, distance_m, duration_s, vehicle_type")
       .eq("id", id)
       .eq("driver_id", driverId)
       .eq("status", "in_progress")
@@ -357,11 +383,18 @@ export async function ridesRoutes(app: FastifyInstance) {
       return reply.status(409).send({ error: "Invalid state transition" });
     }
 
-    // Server-side fare recompute: clamp driver-submitted fare to ±20% of estimate
-    let fareFinal = ride.fare_estimate;
+    // The agreed fare is what the customer offered (already clamped at request
+    // time) or, absent a bid, our estimate. Fix A3: this clamp used to be anchored
+    // to fare_estimate unconditionally, which would have rejected the very fare
+    // the customer agreed to whenever they bid above +20%.
+    const agreedFare = effectiveFare(ride);
+
+    // Server-side fare recompute: clamp driver-submitted fare to ±20% of the
+    // agreed fare, so a driver cannot inflate the total after the fact.
+    let fareFinal = agreedFare;
     if (body.fare_final) {
-      const maxAllowed = ride.fare_estimate * 1.2;
-      const minAllowed = ride.fare_estimate * 0.8;
+      const maxAllowed = agreedFare * 1.2;
+      const minAllowed = agreedFare * 0.8;
       fareFinal = Math.max(minAllowed, Math.min(maxAllowed, body.fare_final));
       fareFinal = Math.round(fareFinal);
     }

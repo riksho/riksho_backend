@@ -12,6 +12,13 @@ export const RideRequestSchema = z.object({
   vehicle_type: z.enum(["bike", "auto", "e_rickshaw", "car", "tempo", "mini_truck", "truck"]),
   service_type: z.enum(["move", "fleet", "quick"]).optional().default("move"),
   cargo_weight_kg: z.number().min(1).optional(),
+  /**
+   * Customer's offered fare from the find-ride stepper (fix A3). Optional — the
+   * server falls back to its own fare_estimate when absent. The value is NOT
+   * trusted: POST /rides clamps it to OFFERED_FARE_MIN_RATIO..MAX_RATIO of the
+   * server-computed estimate, so a crafted request cannot set an absurd fare.
+   */
+  offered_fare: z.number().positive().max(100_000).optional(),
 });
 
 export const RideEstimateSchema = z.object({
