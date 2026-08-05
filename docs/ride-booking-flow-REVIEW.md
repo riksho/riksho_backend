@@ -629,3 +629,51 @@ For the code, revert these three commits-worth of changes together: `push.servic
 2. Ensure both the Customer App and Driver App smoothly transition to the new `ride-complete` screens showing final fares.
 3. Rate the driver/customer using the stars and click Submit.
 4. Verify the database table `ratings` captures both scores correctly.
+
+---
+
+## Log 004 — B3 (Service-Type OTP Gating) + B4 (Location Broadcast Fixes)
+
+**Date:** 2026-08-05
+**Status:** Code complete. **Migrations NOT yet applied** — see Step 1 of the manual checklist.
+
+### What changed — files
+
+#### New files (1)
+
+| File | Purpose |
+|------|---------|
+| `riksho_backend/migrations/022_driver_locations_realtime.sql` | **B4.** Enables Supabase Realtime (Postgres Changes) on the `driver_locations` table so the customer app can subscribe to driver movements directly without taxing the Fastify backend. |
+
+#### Modified files (3)
+
+**Backend**
+
+- **`src/modules/rides/rides.routes.ts`** — **B3.**
+  - `POST /rides/:id/start`: Added a check on `service_type`. Only blocks standard starts for `move` (passenger) rides, ensuring `quick` and `fleet` deliveries can still use `/start` without needing OTPs.
+
+**Customer App**
+
+- **`app/(root)/ride/[rideId].tsx`** — **B4.**
+  - Fixed the `status_change` listener corruption issue by whitelisting valid states (e.g. `accepted`, `arriving`) before merging into the `status` state.
+  - Implemented a dedicated `postgres_changes` realtime subscription to track the driver's live location straight from `driver_locations` instead of relying on overloaded `status_change` events.
+  - Passes the new `driverLocation` state down through `RideLayout`.
+- **`components/Map.tsx` & `components/RideLayout.tsx`** — **B4.**
+  - Added support for `driverLocation` prop to render the driver's icon dynamically as they move, injecting the live coordinates into the Leaflet WebView.
+
+---
+
+### ✋ Manual verification — do these in order
+
+#### Step 1 — Apply Migrations ⚠️ BLOCKING
+1. Add `022_driver_locations_realtime.sql` to Supabase via SQL editor or `npm run migrate` to enable Postgres Changes on the `driver_locations` table.
+
+#### Step 2 — Test Non-Move Jobs (B3)
+1. **Fleet or Quick Job:** Create a fleet or quick-commerce delivery.
+2. **Accept & Start:** Accept the delivery as a driver, and then tap to start it.
+3. **Verify:** Ensure it successfully transitions to `in_progress` directly via `/start` without prompting for an OTP.
+
+#### Step 3 — Test Live Location Tracking (B4)
+1. **Move Job:** Create and accept a standard passenger ride.
+2. **Driver App Movement:** Move the driver app's location (e.g., using an emulator's location simulation or by physically walking).
+3. **Customer App:** Watch the live ride screen. The driver's car marker should update smoothly on the map, and the status text (e.g., "Driver is on the way") must **not** glitch or get corrupted with raw coordinate JSON payloads.
