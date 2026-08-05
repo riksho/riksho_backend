@@ -1,5 +1,6 @@
 import type { FastifyInstance } from "fastify";
-import { ZodError } from "zod";
+import { ZodError, z } from "zod";
+import * as crypto from "node:crypto";
 import { authGuard } from "../../common/auth.guard.js";
 import { requireRole } from "../../common/roles.guard.js";
 import { logger } from "../../common/logger.js";
@@ -69,10 +70,10 @@ export async function ridesRoutes(app: FastifyInstance) {
         dest_address: body.dest_address,
         service_type: body.service_type,
         cargo_weight_kg: body.cargo_weight_kg,
-        distance_m: Math.round(route.distance),
         duration_s: Math.round(route.duration),
         fare_estimate: fareEstimate,
         offered_fare: offeredFare,
+        ride_otp: body.service_type === "move" ? crypto.randomInt(1000, 10000).toString() : null,
         payment_method: "cash",
         payment_status: "pending",
       })
@@ -159,6 +160,11 @@ export async function ridesRoutes(app: FastifyInstance) {
     // Only allow the ride's customer or assigned driver to see it
     if (ride.customer_id !== userId && ride.driver_id !== userId) {
       return reply.status(403).send({ error: "Not authorized to view this ride" });
+    }
+
+    // Never leak OTP to the driver (B2)
+    if (ride.customer_id !== userId) {
+      delete ride.ride_otp;
     }
 
     return reply.send(ride);
@@ -329,10 +335,82 @@ export async function ridesRoutes(app: FastifyInstance) {
     return reply.send({ status: "arriving" });
   });
 
+  // POST /rides/:id/verify-otp — Driver submits OTP to start trip
+  app.post("/rides/:id/verify-otp", { preHandler: [authGuard, requireRole("driver")] }, async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const driverId = request.user!.id;
+    const VerifySchema = z.object({ otp: z.string().length(4) });
+    const body = VerifySchema.parse(request.body);
+
+    const { data: ride } = await supabaseAdmin
+      .from("rides")
+      .select("ride_otp, otp_attempts, driver_id, status, service_type, customer_id")
+      .eq("id", id)
+      .single();
+
+    if (!ride || ride.driver_id !== driverId) {
+      return reply.status(403).send({ error: "Not authorized" });
+    }
+
+    if (ride.status !== "arriving") {
+      return reply.status(409).send({ error: "Driver must arrive first" });
+    }
+    
+    if (ride.service_type !== "move") {
+      return reply.status(400).send({ error: "OTP verification only applies to passenger rides" });
+    }
+
+    if (ride.otp_attempts >= 5) {
+      return reply.status(429).send({ error: "Too many failed attempts. Contact support." });
+    }
+
+    if (ride.ride_otp !== body.otp) {
+      await supabaseAdmin.from("rides").update({ otp_attempts: ride.otp_attempts + 1 }).eq("id", id);
+      return reply.status(400).send({ error: "Invalid OTP" });
+    }
+
+    // OTP verified — transition to in_progress
+    const { data, error } = await supabaseAdmin
+      .from("rides")
+      .update({ status: "in_progress", started_at: new Date().toISOString() })
+      .eq("id", id)
+      .select()
+      .single();
+
+    if (error || !data) {
+      return reply.status(500).send({ error: "Failed to start ride" });
+    }
+
+    await supabaseAdmin.from("ride_events").insert({ ride_id: id, type: "started", payload: { otp_verified: true } });
+
+    broadcastRideStatus(id, "in_progress", {});
+    
+    if (data.customer_id) {
+      sendPush([data.customer_id], {
+        title: "Trip Started",
+        body: "Your trip has started.",
+        data: { ride_id: id, status: "in_progress" },
+      }).catch(() => {});
+    }
+
+    return reply.send({ status: "in_progress" });
+  });
+
   // POST /rides/:id/start — Start the trip
   app.post("/rides/:id/start", { preHandler: [authGuard, requireRole("driver")] }, async (request, reply) => {
     const { id } = request.params as { id: string };
     const driverId = request.user!.id;
+    
+    // First check if it's a move ride, which MUST use verify-otp instead
+    const { data: rideCheck } = await supabaseAdmin
+      .from("rides")
+      .select("service_type")
+      .eq("id", id)
+      .single();
+      
+    if (rideCheck?.service_type === "move") {
+      return reply.status(400).send({ error: "OTP verification required for passenger rides. Use /verify-otp" });
+    }
 
     const { data, error } = await supabaseAdmin
       .from("rides")

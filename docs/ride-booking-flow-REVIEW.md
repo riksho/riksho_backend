@@ -568,3 +568,64 @@ For the code, revert these three commits-worth of changes together: `push.servic
 1. Ensure the driver is "Online". Put the app in the background. Wait 3 minutes, then check if `updated_at` in `driver_locations` table is recent (A4 fixes stale locations).
 2. Accept a ride, verify the backend logs receive location posts frequently (~5s intervals).
 3. Log out on the driver app. Check if the location updates stop entirely, ensuring there are no lingering ghost posts.
+
+---
+
+## Log 003 — B1 (Rating Screens) + B2 (Phase 1 OTP Fixes)
+
+**Date:** 2026-08-05
+**Status:** Code complete. **Migrations NOT yet applied** — see Step 1 of the manual checklist.
+
+### What changed — files
+
+#### New files (3)
+
+| File | Purpose |
+|------|---------|
+| `riksho_backend/migrations/021_ride_otp.sql` | **B2.** Adds `ride_otp` and `otp_attempts` columns to secure passenger pickups against brute force and unverified starts. |
+| `riksho_android/app/(root)/ride-complete.tsx` | **B1.** Phase 5 Post-Ride Summary and Rating Screen for Customers. |
+| `riksho_partner_android/app/(root)/ride-complete.tsx` | **B1.** Phase 5 Post-Ride Summary and Rating Screen for Drivers. |
+
+#### Modified files (3)
+
+**Backend**
+
+- **`src/modules/rides/rides.routes.ts`** — **B2.**
+  - `POST /rides`: Generates a secure OTP using `crypto.randomInt` for `move` rides.
+  - `GET /rides/:id`: Strips `ride_otp` from the response if the caller is the driver, preventing leakage.
+  - `POST /rides/:id/start`: Blocks standard start for `move` rides, requiring OTP verification.
+  - `POST /rides/:id/verify-otp`: New route to accept OTP, check attempts (max 5), verify, and transition the ride to `in_progress`.
+
+**Driver App**
+
+- **`app/(root)/ride/[rideId].tsx`** — **B1 & B2.**
+  - **B2:** Replaced the "Start Trip" button with an OTP input field and a "Verify OTP & Start" button when the status is `arriving` and the service type is `move`.
+  - **B1:** Added routing to `/(root)/ride-complete` when the trip status transitions to `completed` instead of a static `Alert`.
+
+**Customer App**
+
+- **`app/(root)/ride/[rideId].tsx`** — **B1 & B2.**
+  - **B2:** Conditionally renders a prominent OTP banner containing `ride.ride_otp` while the status is `arriving` to prompt the customer to share it with the driver.
+  - **B1:** Replaced the completion Alert with a route push to `/(root)/ride-complete`.
+
+---
+
+### ✋ Manual verification — do these in order
+
+#### Step 1 — Apply Migrations ⚠️ BLOCKING
+1. Add `021_ride_otp.sql` to Supabase via SQL editor or `npm run migrate`.
+
+#### Step 2 — Test OTP Safety (B2)
+1. **Request & Accept Ride (Move Service):** Create a passenger ride (e.g., auto/car/bike/e_rickshaw).
+2. **Driver Arrival:** Tap "I've Arrived" in the driver app.
+3. **Verify App UI:**
+   - The customer app must display the 4-digit OTP prominently in the status banner.
+   - The driver app must switch the "Start Trip" button to an OTP text input field.
+4. **Brute Force Defense:** Enter a wrong OTP 5 times. Ensure the driver is locked out with a 429 Too Many Attempts error.
+5. **Success Path:** Enter the correct OTP and ensure the trip status transitions to `in_progress`.
+
+#### Step 3 — Test Ratings & Summary Screens (B1)
+1. Complete a ride from the driver's side.
+2. Ensure both the Customer App and Driver App smoothly transition to the new `ride-complete` screens showing final fares.
+3. Rate the driver/customer using the stars and click Submit.
+4. Verify the database table `ratings` captures both scores correctly.
