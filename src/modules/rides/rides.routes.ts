@@ -285,6 +285,33 @@ export async function ridesRoutes(app: FastifyInstance) {
     return reply.send({ status: "cancelled" });
   });
 
+  // POST /rides/:id/decline — Driver declines the ride
+  app.post("/rides/:id/decline", { preHandler: [authGuard, requireRole("driver")] }, async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const driverId = request.user!.id;
+
+    // Verify ride is still requested
+    const { data: ride } = await supabaseAdmin
+      .from("rides")
+      .select("status")
+      .eq("id", id)
+      .single();
+
+    if (!ride || ride.status !== "requested") {
+      // It's not requested anymore (someone else took it or cancelled), just ack
+      return reply.send({ status: "ignored" });
+    }
+
+    // Insert decline record so matching service can exclude this driver
+    await supabaseAdmin
+      .from("ride_declines")
+      .insert({ ride_id: id, driver_id: driverId })
+      .select()
+      .single();
+
+    return reply.send({ status: "declined" });
+  });
+
   // POST /rides/:id/accept — Driver accepts (atomic claim)
   app.post("/rides/:id/accept", { preHandler: [authGuard, requireRole("driver")] }, async (request, reply) => {
     const { id } = request.params as { id: string };

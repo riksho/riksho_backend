@@ -18,6 +18,8 @@ const STALE_MINUTES = 2;
  * - Filters stale locations (updated_at > 2 min ago)
  * - Includes ride details in offer payload
  */
+const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+
 export async function findNearbyDrivers(
   lat: number,
   lng: number,
@@ -26,73 +28,13 @@ export async function findNearbyDrivers(
   serviceType: "move" | "fleet" | "quick" = "move",
   cargoWeightKg?: number
 ): Promise<void> {
-  // Approximate bounding box (1 degree lat ≈ 111km)
-  // Expand radius for fleet since partners are sparse
-  const searchRadiusKm = serviceType === "fleet" ? 15 : (serviceType === "quick" ? 3 : SEARCH_RADIUS_KM);
-  const latDelta = searchRadiusKm / 111;
-  const lngDelta = searchRadiusKm / (111 * Math.cos((lat * Math.PI) / 180));
-
-  // Filter stale locations: only drivers who updated in the last 2 minutes
-  const staleThreshold = new Date(Date.now() - STALE_MINUTES * 60 * 1000).toISOString();
-
-  const { data: nearbyLocations, error } = await supabaseAdmin
-    .from("driver_locations")
-    .select("driver_id, lat, lng")
-    .gte("lat", lat - latDelta)
-    .lte("lat", lat + latDelta)
-    .gte("lng", lng - lngDelta)
-    .lte("lng", lng + lngDelta)
-    .gte("updated_at", staleThreshold)
-    .limit(MAX_DRIVERS * 4); // Fetch extra for extended filtering
-
-  if (error || !nearbyLocations?.length) {
-    logger.warn({ rideId }, "No nearby drivers found");
-    return;
-  }
-
-  // Filter to only online drivers with matching vehicle type and capacity
-  const driverIds = nearbyLocations.map((loc) => loc.driver_id);
-  
-  let query = supabaseAdmin
-    .from("drivers")
-    .select("id, name, partner_type, vehicles!inner(type, capacity_kg)")
-    .in("id", driverIds)
-    .eq("status", "online")
-    .eq("is_verified", true);
-
-  if (serviceType === "fleet") {
-    // Fleet: match the requested truck class + enough payload capacity.
-    query = query.eq("partner_type", "fleet").eq("vehicles.type", vehicleType);
-    if (cargoWeightKg) {
-      query = query.gte("vehicles.capacity_kg", cargoWeightKg);
-    }
-  } else if (serviceType === "quick") {
-    // Quick: any verified quick_rider nearby. We deliberately do NOT filter on
-    // vehicles.type — a rider's registered vehicle (auto/bike) is irrelevant to
-    // carrying a small delivery bag, and enforcing it caused zero matches (M4).
-    query = query.eq("partner_type", "quick_rider");
-  } else {
-    // Move (cab/bike): match the requested vehicle type.
-    query = query.eq("partner_type", "cab_bike").eq("vehicles.type", vehicleType);
-  }
-
-  const { data: onlineDrivers } = await query.limit(MAX_DRIVERS);
-
-  if (!onlineDrivers?.length) {
-    logger.warn({ rideId }, "No online drivers nearby matching criteria");
-    return;
-  }
-
-    // Fetch ride details to include in the offer
+  // Fetch ride details once
   const { data: rideData } = await supabaseAdmin
     .from("rides")
     .select("origin_address, dest_address, fare_estimate, offered_fare, distance_m, service_type, cargo_weight_kg")
     .eq("id", rideId)
     .single();
 
-  // The offer payload is identical across both transports below, so build it once.
-  // Realtime is primary (instant, app in foreground); the data-only FCM push is the
-  // backstop that reaches a driver whose app is backgrounded or whose websocket died.
   const offerPayload = {
     ride_id: rideId,
     origin_lat: lat,
@@ -102,13 +44,7 @@ export async function findNearbyDrivers(
     vehicle_type: vehicleType,
     service_type: rideData?.service_type,
     cargo_weight_kg: rideData?.cargo_weight_kg,
-    // `fare_estimate` here is the number the driver is being offered and will be
-    // paid — the customer's clamped bid when they made one, else our estimate
-    // (fix A3). Keeping the key name means the driver app's OfferCard, which
-    // already reads `fare_estimate`, needs no change to show the right figure.
     fare_estimate: rideData ? effectiveFare(rideData) : undefined,
-    // Sent alongside so the offer card can flag an above-estimate bid as a
-    // sweetener ("₹120 · boosted") rather than silently showing a higher number.
     base_estimate: rideData?.fare_estimate,
     is_boosted: Boolean(
       rideData?.offered_fare && Number(rideData.offered_fare) > Number(rideData.fare_estimate)
@@ -116,21 +52,86 @@ export async function findNearbyDrivers(
     distance_km: rideData?.distance_m ? +(rideData.distance_m / 1000).toFixed(1) : undefined,
   };
 
-  // Broadcast ride offer to each driver via REST broadcast (no subscribe needed).
-  // Fire in parallel — these were previously awaited serially, so offering to 10
-  // drivers cost 10 sequential round trips to Supabase and the last driver saw the
-  // offer noticeably later than the first, skewing who could accept it.
-  await Promise.allSettled(
-    onlineDrivers.map((driver) => broadcastRideOffer(driver.id, offerPayload))
-  );
+  const radii = [3000, 5000, 8000]; // 3km, 5km, 8km
+  const delays = [0, 15000, 15000]; // 0s, 15s, 15s
 
-  // Data-only, high-priority FCM push. Carries NO notification block on purpose so
-  // the driver app's own handler renders the OfferCard rather than Android drawing a
-  // dead tray notification with no accept button. See sendRideOfferPush().
-  await sendRideOfferPush(
-    onlineDrivers.map((d) => d.id),
-    offerPayload
-  );
+  for (let i = 0; i < radii.length; i++) {
+    if (delays[i] > 0) {
+      await delay(delays[i]);
+    }
 
-  logger.info({ rideId, driverCount: onlineDrivers.length }, "Sent ride offers to nearby drivers");
+    // Check if ride is still in requested state
+    const { data: rideCheck } = await supabaseAdmin
+      .from("rides")
+      .select("status, driver_id")
+      .eq("id", rideId)
+      .single();
+
+    if (!rideCheck || rideCheck.status !== "requested" || rideCheck.driver_id) {
+      logger.info({ rideId }, "Ride no longer requested, aborting matching wave");
+      return;
+    }
+
+    const radiusMeters = serviceType === "fleet" ? radii[i] * 3 : radii[i];
+
+    // Fetch declined driver IDs
+    const { data: declines } = await supabaseAdmin
+      .from("ride_declines")
+      .select("driver_id")
+      .eq("ride_id", rideId);
+    
+    const excludedDriverIds = declines ? declines.map(d => d.driver_id) : [];
+
+    // Use PostGIS nearby_drivers RPC
+    const { data: nearbyLocations, error } = await supabaseAdmin.rpc("nearby_drivers", {
+      p_lat: lat,
+      p_lng: lng,
+      p_radius_m: radiusMeters,
+      p_vehicle_type: serviceType === "quick" ? "" : vehicleType,
+      p_excluded_driver_ids: excludedDriverIds
+    });
+
+    if (error || !nearbyLocations?.length) {
+      logger.warn({ rideId, radiusMeters, wave: i + 1 }, "No nearby drivers found in this wave");
+      continue; // Try next wave
+    }
+
+    const driverIds = nearbyLocations.map((loc: any) => loc.driver_id);
+    
+    let query = supabaseAdmin
+      .from("drivers")
+      .select("id, name, partner_type, vehicles!inner(type, capacity_kg)")
+      .in("id", driverIds)
+      .eq("status", "online")
+      .eq("is_verified", true);
+
+    if (serviceType === "fleet") {
+      query = query.eq("partner_type", "fleet").eq("vehicles.type", vehicleType);
+      if (cargoWeightKg) {
+        query = query.gte("vehicles.capacity_kg", cargoWeightKg);
+      }
+    } else if (serviceType === "quick") {
+      query = query.eq("partner_type", "quick_rider");
+    } else {
+      query = query.eq("partner_type", "cab_bike").eq("vehicles.type", vehicleType);
+    }
+
+    const { data: onlineDrivers } = await query;
+
+    if (!onlineDrivers?.length) {
+      logger.warn({ rideId, wave: i + 1 }, "No online drivers matching criteria in this wave");
+      continue;
+    }
+
+    await Promise.allSettled(
+      onlineDrivers.map((driver) => broadcastRideOffer(driver.id, offerPayload))
+    );
+
+    await sendRideOfferPush(
+      onlineDrivers.map((d) => d.id),
+      offerPayload
+    );
+
+    logger.info({ rideId, driverCount: onlineDrivers.length, radiusMeters, wave: i + 1 }, "Sent ride offers to drivers");
+  }
 }

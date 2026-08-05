@@ -714,3 +714,52 @@ For the code, revert these three commits-worth of changes together: `push.servic
 2. Ensure your simulator/device location is **more than 2km away** from the drop-off destination.
 3. Tap "Complete Trip".
 4. Check the Supabase `ride_events` table for that `ride_id` and ensure a new row with `type = 'anomaly'` and `reason = 'early_completion'` was successfully logged.
+
+---
+
+## Log 006 — B7 (Matching Enhancements) + B8 (Effort Re-estimation)
+
+**Date:** 2026-08-05
+**Status:** Code complete. **Migrations NOT yet applied** — see Step 1 of the manual checklist.
+
+### What changed — files
+
+#### New files (1)
+
+| File | Purpose |
+|------|---------|
+| `riksho_backend/migrations/023_postgis_matching.sql` | **B7.** Enables `postgis`, adds a geography column to `driver_locations`, creates an RPC `nearby_drivers` for true distance sorting, and creates a new `ride_declines` table. |
+
+#### Modified files (3)
+
+**Backend**
+
+- **`src/modules/rides/rides.routes.ts`** — **B7.**
+  - Added `POST /rides/:id/decline` which inserts a record into `ride_declines` so the matching service can definitively track explicit driver rejections.
+- **`src/modules/matching/matching.service.ts`** — **B7.**
+  - **Staged Radius Expansion:** Radically refactored `findNearbyDrivers` to execute in staged waves: `3km` immediately, `5km` after 15s, and `8km` after 30s.
+  - **PostGIS Integration:** Replaced the crude bounding-box calculation with the new `nearby_drivers` RPC, which filters out offline/stale drivers and returns them strictly ordered by actual proximity.
+  - **Exclusion of Declined Drivers:** The service now fetches IDs from `ride_declines` for the current ride and injects them into `nearby_drivers`, ensuring we don't spam a driver who already rejected the offer.
+
+**Driver App**
+
+- **`app/(root)/(tabs)/home.tsx`** — **B7.**
+  - Updated `handleDeclineRide` to hit the new `POST /rides/:id/decline` endpoint (rather than just clearing the local UI state) to formally record the decline on the server.
+
+### Notes on B8
+
+- **B8 (Effort Optimism):** Acknowledged. No code changes required here, but the advisory is noted for any future sprint planning on Phase 0 tasks (especially the background-location work in A4 on Android 14+).
+
+---
+
+### ✋ Manual verification — do these in order
+
+#### Step 1 — Apply Migrations ⚠️ BLOCKING
+1. Add `023_postgis_matching.sql` to Supabase via SQL editor or `npm run migrate`. This is crucial as it installs PostGIS and creates the `nearby_drivers` RPC.
+
+#### Step 2 — Test Matching Expansion & Exclusion (B7)
+1. Ensure you have two driver accounts online (e.g., Driver A and Driver B) and one customer account.
+2. Request a ride as a customer.
+3. When the offer pops up on Driver A's app, **Decline** it.
+4. Wait ~15 seconds. Driver B should receive the offer in the second matching wave, but Driver A should **not** receive it again.
+5. Watch the backend logs (`npm run dev`) to see the structured logging trace: `"Sent ride offers to drivers"` alongside `radiusMeters` and `wave`.
