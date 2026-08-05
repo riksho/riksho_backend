@@ -50,10 +50,18 @@ await app.register(helmet, {
   contentSecurityPolicy: false, // Not needed for an API server
 });
 
-// Rate limiting
+// Rate limiting.
+//
+// Keyed on the authenticated user id where available, falling back to IP for
+// unauthenticated routes. Per-IP alone is wrong for this app (fix A4): Indian
+// mobile carriers put many subscribers behind the same NAT address, and the
+// background location service now posts ~12x/min per on-trip driver. A handful of
+// drivers on the same carrier would exhaust a shared 100/min budget and start
+// getting 429s on ride accepts — the worst possible request to drop.
 await app.register(rateLimit, {
-  max: 100,           // 100 requests per minute per IP (global)
+  max: 300,
   timeWindow: "1 minute",
+  keyGenerator: (request) => request.user?.id ?? request.ip,
 });
 
 // --- Global error handler ---

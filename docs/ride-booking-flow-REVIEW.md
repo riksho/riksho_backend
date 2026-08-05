@@ -509,3 +509,62 @@ ALTER TABLE public.push_tokens ADD PRIMARY KEY (user_id);
 `018` needs no rollback — widening a CHECK constraint cannot invalidate existing rows. Reverting it would only re-break e_rickshaw.
 
 For the code, revert these three commits-worth of changes together: `push.service.ts` + `fcm.service.ts` + `fcm.routes.ts` are **mutually dependent** (the `onConflict` key, the `MulticastResult` return type, and the `token_type` filter). Reverting one alone will not compile.
+
+---
+
+## Log 002 — A3 (Offered Fare) + A4 (Driver Background Location)
+
+**Date:** 2026-08-05
+**Status:** Code complete. **Migrations NOT yet applied** — see Step 1 of the manual checklist.
+
+### What changed — files
+
+#### New files (2)
+
+| File | Purpose |
+|------|---------|
+| `riksho_backend/migrations/020_offered_fare.sql` | **A3.** Adds `offered_fare` to track the customer's bid. |
+| `riksho_partner_android/lib/backgroundLocation.ts` | **A4.** Implements a robust foreground service for location tracking using `expo-task-manager`, ensuring updates aren't paused when the app is backgrounded. |
+
+#### Modified files (11)
+
+**Backend**
+
+- **`src/common/schemas.ts`** — **A3.** Added `offered_fare` to `RideRequestSchema`.
+- **`src/modules/fares/fares.config.ts`** — **A3.** Defined bounding ratios (`OFFERED_FARE_MIN_RATIO`, `OFFERED_FARE_MAX_RATIO`) and helper functions `clampOfferedFare` and `effectiveFare` to ensure safe bounds around the baseline estimate and determine the "agreed fare".
+- **`src/modules/rides/rides.routes.ts`** — **A3.** In `POST /rides`, `offered_fare` is clamped securely before saving, and the final value is echoed to the customer. For completion, the `fare_final` clamp is now relative to the `agreedFare` (the customer's accepted bid, when present).
+- **`src/modules/matching/matching.service.ts`** — **A3.** Extracted the `offered_fare` into the payload and set `is_boosted` to correctly inform the driver if the bid was higher than standard.
+- **`src/modules/matching/broadcast.service.ts`** — **A3.** Extended the broadcast interface with `fare_estimate`, `base_estimate`, and `is_boosted`.
+- **`src/index.ts`** — **A4.** Updated rate-limiting to use `request.user?.id ?? request.ip` with a limit of 300, avoiding false 429s for drivers sharing mobile NAT IPs.
+
+**Driver App**
+
+- **`app.json`** — **A4.** Added necessary permissions (`ACCESS_COARSE_LOCATION`, `ACCESS_FINE_LOCATION`, `ACCESS_BACKGROUND_LOCATION`, `FOREGROUND_SERVICE`, `FOREGROUND_SERVICE_LOCATION`, `WAKE_LOCK`, `POST_NOTIFICATIONS`) and explicitly configured the `expo-location` plugin attributes.
+- **`app/(root)/(tabs)/home.tsx`** — **A4.** Replaced the 10s interval string location updater with `startLocationTracking` and `stopLocationTracking` when transitioning `isOnline`.
+- **`app/(root)/ride/[rideId].tsx`** — **A3/A4.** Updated to surface the `offered_fare` and dynamically adjusted location-fetching interval on-trip ("onTrip" cadence) versus returning to idle mode afterwards.
+- **`components/OfferCard.tsx`** — **A3.** Styled `offer.is_boosted` condition to show a prominent "▲ BOOSTED" badge.
+- **`lib/pushHandlers.ts`** — **A3.** Type-casted incoming payload strings into standard types.
+- **`app/(root)/(tabs)/profile.tsx`** — **A4.** Ensures `stopLocationTracking` triggers safely prior to sign-out, removing ghost tracking when offline.
+
+**Customer App**
+
+- **`app/(root)/find-ride.tsx`** — **A3.** Shows an `Alert` informing the rider if their bid was clamped externally by the server backend logic.
+- **`app/(root)/ride/[rideId].tsx`** — **A3.** Added the agreed `offered_fare` inline logic as a visual representation to the customer.
+
+---
+
+### ✋ Manual verification — do these in order
+
+#### Step 1 — Apply Migrations and Install Packages ⚠️ BLOCKING
+1. Add `020_offered_fare.sql` to Supabase via SQL editor or `npm run migrate`.
+2. Do a fresh native build of the `riksho_partner_android` app (since native permissions and configurations in `app.json` were changed for A4 background tracking and `expo-task-manager` was installed).
+
+#### Step 2 — Test Fare Adjustments (A3)
+1. **Find a Driver (Customer App):** Enter locations and observe the fare estimate. Modify the fare with the stepper so it is 1.5x the base. Confirm ride.
+2. **Offer Card (Driver App):** Ensure the notification arrives and clearly states "▲ BOOSTED" beside the bumped fare.
+3. **Out-of-bounds Testing:** Attempt to bypass the stepper or intercept the network call and inject an absurdly high (e.g. ₹10,000) or low fare. Ensure the backend clamps it successfully and the customer app shows the adjustment Alert.
+
+#### Step 3 — Background Location Cadence (A4)
+1. Ensure the driver is "Online". Put the app in the background. Wait 3 minutes, then check if `updated_at` in `driver_locations` table is recent (A4 fixes stale locations).
+2. Accept a ride, verify the backend logs receive location posts frequently (~5s intervals).
+3. Log out on the driver app. Check if the location updates stop entirely, ensuring there are no lingering ghost posts.
