@@ -268,20 +268,66 @@ export async function driversRoutes(app: FastifyInstance) {
       return reply.status(500).send({ error: "Failed to fetch payouts" });
     }
 
-    // Calculate pending balance by summing earnings since the last payout
-    const lastPayoutDate = payouts?.[0]?.period_end || new Date(0).toISOString();
-    
-    const { data: pendingEarnings } = await supabaseAdmin
+    // Calculate pending balance by summing all-time earnings minus all-time payouts
+    const { data: allEarnings } = await supabaseAdmin
       .from("earnings")
       .select("net")
-      .eq("driver_id", driverId)
-      .gt("created_at", lastPayoutDate);
-
-    const pendingBalance = (pendingEarnings || []).reduce((sum, e) => sum + (e.net || 0), 0);
+      .eq("driver_id", driverId);
+      
+    const totalEarnings = (allEarnings || []).reduce((sum, e) => sum + (e.net || 0), 0);
+    const totalPayouts = (payouts || []).reduce((sum, p) => sum + (p.net || 0), 0);
+    
+    const pendingBalance = totalEarnings - totalPayouts;
 
     return reply.send({
       payouts: payouts || [],
-      pending_balance: pendingBalance,
+      pending_balance: pendingBalance > 0 ? pendingBalance : 0,
+    });
+  });
+
+  // POST /drivers/withdraw — Request a withdrawal
+  app.post("/drivers/withdraw", { preHandler: [authGuard, requireRole("driver")] }, async (request, reply) => {
+    const driverId = request.user!.id;
+    const { amount } = request.body as { amount: number };
+
+    if (!amount || amount < 500) {
+      return reply.status(400).send({ error: "Minimum withdrawal amount is ₹500" });
+    }
+
+    // Recalculate pending balance safely
+    const { data: allEarnings } = await supabaseAdmin.from("earnings").select("net").eq("driver_id", driverId);
+    const { data: allPayouts } = await supabaseAdmin.from("driver_payouts").select("net").eq("driver_id", driverId);
+    
+    const totalEarnings = (allEarnings || []).reduce((sum, e) => sum + (e.net || 0), 0);
+    const totalPayouts = (allPayouts || []).reduce((sum, p) => sum + (p.net || 0), 0);
+    const pendingBalance = totalEarnings - totalPayouts;
+
+    if (amount > pendingBalance) {
+      return reply.status(400).send({ error: "Insufficient pending balance" });
+    }
+
+    // Insert payout record
+    const { data: newPayout, error } = await supabaseAdmin
+      .from("driver_payouts")
+      .insert({
+        driver_id: driverId,
+        period_start: new Date().toISOString(), // In a real ledger we might tie this to specific weeks, but for now we record the transaction time
+        period_end: new Date().toISOString(),
+        net: amount,
+        gross: amount, // Keeping gross/net identical for withdrawals as commission was already deducted in earnings
+        status: "pending"
+      })
+      .select()
+      .single();
+
+    if (error) {
+      return reply.status(500).send({ error: "Failed to process withdrawal" });
+    }
+
+    return reply.send({
+      success: true,
+      pending_balance: pendingBalance - amount,
+      payout: newPayout
     });
   });
 
