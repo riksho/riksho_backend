@@ -245,13 +245,80 @@ export default async function businessRoutes(app: FastifyInstance) {
 
     const { data, error } = await supabaseAdmin
       .from("rides")
-      .select("id, origin_address, dest_address, vehicle_type, status, fare_estimate, fare_final, cargo_weight_kg, created_at, completed_at, service_type")
+      .select("id, origin_address, dest_address, vehicle_type, status, fare_estimate, fare_final, cargo_weight_kg, created_at, completed_at, service_type, driver_id")
       .eq("business_id", business.id)
       .order("created_at", { ascending: false })
       .limit(50);
 
     if (error) return reply.status(500).send({ error: "Failed to fetch shipments" });
     return reply.send({ shipments: data || [] });
+  });
+
+  // POST /business/portal/shipments/bulk — Bulk upload shipments
+  app.post("/business/portal/shipments/bulk", portalGuard, async (request, reply) => {
+    const userId = request.user!.id;
+    const business = await getBusinessForUser(userId);
+    if (!business) {
+      return reply.status(403).send({ error: "No business account." });
+    }
+
+    const { shipments } = request.body as { shipments: any[] };
+    if (!Array.isArray(shipments) || shipments.length === 0) {
+      return reply.status(400).send({ error: "Invalid or empty shipments array" });
+    }
+
+    const newRides = [];
+    for (const s of shipments) {
+      // In a real prod env, we'd geocode the address here or on the frontend.
+      // For this POC, we'll use placeholder coordinates if none are provided.
+      const originLat = s.origin_lat || 28.6139;
+      const originLng = s.origin_lng || 77.2090;
+      const destLat = s.dest_lat || 28.5355;
+      const destLng = s.dest_lng || 77.3910;
+      const vehicleType = s.vehicle_type || "mini_truck";
+      
+      const distanceM = 15000; // Mock 15km for bulk simple insert
+      const durationS = 3600; // Mock 1h
+      const fareEstimate = calculateFare(vehicleType as VehicleType, distanceM, durationS);
+
+      newRides.push({
+        business_id: business.id,
+        service_type: "fleet",
+        status: "requested",
+        vehicle_type: vehicleType,
+        origin_lat: originLat,
+        origin_lng: originLng,
+        origin_address: s.origin_address || "Unknown Origin",
+        dest_lat: destLat,
+        dest_lng: destLng,
+        dest_address: s.dest_address || "Unknown Destination",
+        cargo_weight_kg: Number(s.cargo_weight_kg) || 100,
+        distance_m: distanceM,
+        duration_s: durationS,
+        fare_estimate: fareEstimate,
+        payment_method: "invoice",
+        payment_status: "pending",
+      });
+    }
+
+    const { data, error } = await supabaseAdmin
+      .from("rides")
+      .insert(newRides)
+      .select();
+
+    if (error) {
+      logger.error({ err: error?.message }, "Failed to bulk create fleet jobs");
+      return reply.status(500).send({ error: "Failed to process bulk upload" });
+    }
+
+    // Trigger driver discovery for all
+    if (data) {
+      for (const ride of data) {
+        findNearbyDrivers(ride.origin_lat, ride.origin_lng, ride.vehicle_type, ride.id, "fleet", ride.cargo_weight_kg).catch(() => {});
+      }
+    }
+
+    return reply.status(201).send({ message: `Successfully created ${data?.length || 0} shipments`, count: data?.length });
   });
 }
 
