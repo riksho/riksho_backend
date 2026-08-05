@@ -70,6 +70,7 @@ export async function ridesRoutes(app: FastifyInstance) {
         dest_address: body.dest_address,
         service_type: body.service_type,
         cargo_weight_kg: body.cargo_weight_kg,
+        distance_m: Math.round(route.distance),
         duration_s: Math.round(route.duration),
         fare_estimate: fareEstimate,
         offered_fare: offeredFare,
@@ -125,11 +126,14 @@ export async function ridesRoutes(app: FastifyInstance) {
     const durationMin = Math.round(route.duration / 60);
 
     // Return estimates for all vehicle types so the customer can pick
-    const estimates = {
+    const estimates: Record<string, number> = {
       bike: calculateFare("bike", route.distance, route.duration),
       auto: calculateFare("auto", route.distance, route.duration),
       e_rickshaw: calculateFare("e_rickshaw", route.distance, route.duration),
       car: calculateFare("car", route.distance, route.duration),
+      tempo: calculateFare("tempo", route.distance, route.duration),
+      mini_truck: calculateFare("mini_truck", route.distance, route.duration),
+      truck: calculateFare("truck", route.distance, route.duration),
     };
 
     return reply.send({
@@ -271,6 +275,16 @@ export async function ridesRoutes(app: FastifyInstance) {
       return reply.status(409).send({ error: "Ride cannot be cancelled in its current state" });
     }
 
+    // If a driver had already been assigned (accepted/arriving), reset them to
+    // online so they can receive new offers. Without this, the driver remains
+    // stuck as on_trip and silently stops getting matched.
+    if (data.driver_id) {
+      await supabaseAdmin
+        .from("drivers")
+        .update({ status: "online" })
+        .eq("id", data.driver_id);
+    }
+
     await supabaseAdmin.from("ride_events").insert({
       ride_id: id,
       type: "cancelled",
@@ -281,6 +295,18 @@ export async function ridesRoutes(app: FastifyInstance) {
     broadcastRideStatus(id, "cancelled", { cancelled_by: cancelledBy });
     syncQuickOrder(id, "cancelled").catch(() => {});
     notifyBusinessWebhook(id, "cancelled", { cancelled_by: cancelledBy }).catch(() => {});
+
+    // Push-notify the other party so they know even if backgrounded
+    const notifyUserId = cancelledBy === "customer" ? data.driver_id : data.customer_id;
+    if (notifyUserId) {
+      sendPush([notifyUserId], {
+        title: "Ride Cancelled",
+        body: cancelledBy === "customer"
+          ? "The customer cancelled this ride."
+          : "The driver cancelled this ride.",
+        data: { ride_id: id, status: "cancelled" },
+      }).catch(() => {});
+    }
 
     return reply.send({ status: "cancelled" });
   });

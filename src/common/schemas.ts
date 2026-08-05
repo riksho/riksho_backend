@@ -26,7 +26,7 @@ export const RideEstimateSchema = z.object({
   origin_lng: z.number().min(-180).max(180),
   dest_lat: z.number().min(-90).max(90),
   dest_lng: z.number().min(-180).max(180),
-  vehicle_type: z.enum(["bike", "auto", "e_rickshaw", "car"]),
+  vehicle_type: z.enum(["bike", "auto", "e_rickshaw", "car", "tempo", "mini_truck", "truck"]),
 });
 
 export const RideCancelSchema = z.object({
