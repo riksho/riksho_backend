@@ -677,3 +677,40 @@ For the code, revert these three commits-worth of changes together: `push.servic
 1. **Move Job:** Create and accept a standard passenger ride.
 2. **Driver App Movement:** Move the driver app's location (e.g., using an emulator's location simulation or by physically walking).
 3. **Customer App:** Watch the live ride screen. The driver's car marker should update smoothly on the map, and the status text (e.g., "Driver is on the way") must **not** glitch or get corrupted with raw coordinate JSON payloads.
+
+---
+
+## Log 005 — B5 (Arrival Security) + B6 (Driver-Customer Info Fixes)
+
+**Date:** 2026-08-05
+**Status:** Code complete.
+
+### What changed — files
+
+#### Modified files (1)
+
+**Backend**
+
+- **`src/modules/rides/rides.routes.ts`** — **B5 & B6.**
+  - **B5 (Arrival Security):** Refactored `POST /rides/:id/complete` to include a server-side sanity check. Before completing the ride, it calculates the Haversine distance between the driver's last known location (`driver_locations`) and the ride's `dest_lat`/`dest_lng`. If the driver completes the ride more than 2km away from the destination, it securely logs an `anomaly` event to the `ride_events` table (does not hard-block to account for legitimate GPS drift).
+  - **B6 (Info Fixes):** Updated `GET /rides/:id` to securely fetch and append the `customer_name` (with a fallback to "Customer" for nulls) and `customer_phone` for the driver. This fixes the broken "Call Customer" button in the driver app.
+  - **B6 (Info Fixes):** Updated `POST /rides/:id/accept` to fetch the accepting driver's name, phone, rating, and vehicle details (`type, plate, model`). Handled the Supabase `vehicles` join safely (`Array.isArray` fallback) and broadcasts the rich profile to the customer app immediately upon acceptance.
+
+---
+
+### ✋ Manual verification — do these in order
+
+#### Step 1 — Test Driver Info Broadcast (B6)
+1. Request a ride from the customer app.
+2. Accept the ride in the driver app.
+3. Verify that the customer app immediately shows the driver's name, vehicle plate, and model instead of blanks.
+
+#### Step 2 — Test Call Functionality (B6)
+1. On the driver app's active trip screen, tap the "Call" button.
+2. Verify that it properly opens the device dialer with the customer's phone number instead of showing "Contact unavailable".
+
+#### Step 3 — Test Anomaly Logging (B5)
+1. As a driver, accept a ride. Start the ride.
+2. Ensure your simulator/device location is **more than 2km away** from the drop-off destination.
+3. Tap "Complete Trip".
+4. Check the Supabase `ride_events` table for that `ride_id` and ensure a new row with `type = 'anomaly'` and `reason = 'early_completion'` was successfully logged.

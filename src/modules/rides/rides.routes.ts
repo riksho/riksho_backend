@@ -167,6 +167,39 @@ export async function ridesRoutes(app: FastifyInstance) {
       delete ride.ride_otp;
     }
 
+    // B6: Append customer name and phone so driver app can call the customer
+    if (ride.driver_id === userId || request.user!.role === "driver") {
+      const { data: customer } = await supabaseAdmin
+        .from("users")
+        .select("name, phone")
+        .eq("id", ride.customer_id)
+        .single();
+        
+      if (customer) {
+        ride.customer_phone = customer.phone;
+        ride.customer_name = customer.name || "Customer";
+      }
+    }
+
+    // Append driver info if customer is calling
+    if (ride.customer_id === userId && ride.driver_id) {
+      const { data: driverInfo } = await supabaseAdmin
+        .from("drivers")
+        .select("name, phone, rating, vehicles(type, plate, model)")
+        .eq("id", ride.driver_id)
+        .single();
+        
+      if (driverInfo) {
+        const v = Array.isArray(driverInfo.vehicles) ? driverInfo.vehicles[0] : driverInfo.vehicles;
+        ride.driver_name = driverInfo.name || "Driver";
+        ride.driver_phone = driverInfo.phone;
+        ride.driver_rating = driverInfo.rating;
+        ride.vehicle_type = v?.type;
+        ride.vehicle_plate = v?.plate;
+        ride.vehicle_model = v?.model;
+      }
+    }
+
     return reply.send(ride);
   });
 
@@ -284,8 +317,33 @@ export async function ridesRoutes(app: FastifyInstance) {
       payload: { driver_id: driverId },
     });
 
-    // Broadcast to customer: driver accepted
-    broadcastRideStatus(id, "accepted", { driver_id: driverId });
+    // B6: Fetch driver and vehicle info to broadcast to customer
+    const { data: driverInfo } = await supabaseAdmin
+      .from("drivers")
+      .select("name, phone, rating, vehicles(type, plate, model)")
+      .eq("id", driverId)
+      .single();
+
+    let vType, vPlate, vModel;
+    if (driverInfo?.vehicles) {
+      const v = Array.isArray(driverInfo.vehicles) ? driverInfo.vehicles[0] : driverInfo.vehicles;
+      vType = v?.type;
+      vPlate = v?.plate;
+      vModel = v?.model;
+    }
+
+    const acceptPayload = {
+      driver_id: driverId,
+      driver_name: driverInfo?.name || "Driver",
+      driver_phone: driverInfo?.phone,
+      driver_rating: driverInfo?.rating,
+      vehicle_type: vType,
+      vehicle_plate: vPlate,
+      vehicle_model: vModel,
+    };
+
+    // Broadcast to customer: driver accepted with full info
+    broadcastRideStatus(id, "accepted", acceptPayload);
     notifyBusinessWebhook(id, "accepted", { driver_id: driverId }).catch(() => {});
     
     if (data.customer_id) {
@@ -451,7 +509,7 @@ export async function ridesRoutes(app: FastifyInstance) {
 
     const { data: ride } = await supabaseAdmin
       .from("rides")
-      .select("fare_estimate, offered_fare, distance_m, duration_s, vehicle_type")
+      .select("fare_estimate, offered_fare, distance_m, duration_s, vehicle_type, dest_lat, dest_lng")
       .eq("id", id)
       .eq("driver_id", driverId)
       .eq("status", "in_progress")
@@ -459,6 +517,41 @@ export async function ridesRoutes(app: FastifyInstance) {
 
     if (!ride) {
       return reply.status(409).send({ error: "Invalid state transition" });
+    }
+
+    // Server-side location sanity check: verify driver is reasonably close to destination
+    try {
+      const { data: driverLoc } = await supabaseAdmin
+        .from("driver_locations")
+        .select("lat, lng")
+        .eq("driver_id", driverId)
+        .single();
+        
+      if (driverLoc && ride.dest_lat && ride.dest_lng) {
+        const toRad = (value: number) => (value * Math.PI) / 180;
+        const R = 6371e3; // meters
+        const dLat = toRad(ride.dest_lat - driverLoc.lat);
+        const dLng = toRad(ride.dest_lng - driverLoc.lng);
+        const lat1 = toRad(driverLoc.lat);
+        const lat2 = toRad(ride.dest_lat);
+
+        const a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+                  Math.sin(dLng / 2) * Math.sin(dLng / 2) * Math.cos(lat1) * Math.cos(lat2);
+        const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+        const distance = R * c;
+
+        // If completing more than 2km away from destination, log an anomaly
+        if (distance > 2000) {
+          console.warn(`[ANOMALY] Driver ${driverId} completed ride ${id} ${Math.round(distance)}m away from destination.`);
+          await supabaseAdmin.from("ride_events").insert({
+            ride_id: id,
+            type: "anomaly",
+            payload: { reason: "early_completion", distance_m: Math.round(distance), driver_lat: driverLoc.lat, driver_lng: driverLoc.lng }
+          });
+        }
+      }
+    } catch (err) {
+      console.error("Failed to verify driver location at completion:", err);
     }
 
     // The agreed fare is what the customer offered (already clamped at request
