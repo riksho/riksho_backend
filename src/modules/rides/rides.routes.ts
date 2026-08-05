@@ -189,7 +189,7 @@ export async function ridesRoutes(app: FastifyInstance) {
     if (ride.customer_id === userId && ride.driver_id) {
       const { data: driverInfo } = await supabaseAdmin
         .from("drivers")
-        .select("name, phone, rating, vehicles(type, plate, model)")
+        .select("name, phone, rating, vehicles!vehicles_driver_id_fkey(type, plate, model)")
         .eq("id", ride.driver_id)
         .single();
         
@@ -373,7 +373,7 @@ export async function ridesRoutes(app: FastifyInstance) {
     // B6: Fetch driver and vehicle info to broadcast to customer
     const { data: driverInfo } = await supabaseAdmin
       .from("drivers")
-      .select("name, phone, rating, vehicles(type, plate, model)")
+      .select("name, phone, rating, vehicles!vehicles_driver_id_fkey(type, plate, model)")
       .eq("id", driverId)
       .single();
 

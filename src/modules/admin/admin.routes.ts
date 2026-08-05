@@ -38,7 +38,7 @@ export async function adminRoutes(app: FastifyInstance) {
     const { status = "pending", q, page = "0" } = req.query as any;
     let query = supabaseAdmin
       .from("drivers")
-      .select("id, name, phone, license_no, status, verification_status, is_verified, rating, total_trips, created_at, vehicles(type, plate, model)")
+      .select("id, name, phone, license_no, status, verification_status, is_verified, rating, total_trips, created_at, vehicles!vehicles_driver_id_fkey(type, plate, model)")
       .order("created_at", { ascending: false })
       .range(Number(page) * 20, Number(page) * 20 + 19);
       
@@ -55,7 +55,7 @@ export async function adminRoutes(app: FastifyInstance) {
   app.get("/admin/drivers/:id", guard, async (req, reply) => {
     const { id } = req.params as { id: string };
     const { data, error } = await supabaseAdmin
-      .from("drivers").select("*, vehicles(*)").eq("id", id).single();
+      .from("drivers").select("*, vehicles!vehicles_driver_id_fkey(*)").eq("id", id).single();
       
     if (error || !data) return reply.status(404).send({ error: "Driver not found" });
     

@@ -123,7 +123,7 @@ export async function driversRoutes(app: FastifyInstance) {
 
     const { data, error } = await supabaseAdmin
       .from("drivers")
-      .select("*, vehicles(*)")
+      .select("*, vehicles!vehicles_driver_id_fkey(*)")
       .eq("id", driverId)
       .single();
 
