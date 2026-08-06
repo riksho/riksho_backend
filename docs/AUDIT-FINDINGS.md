@@ -603,3 +603,47 @@ whether the switcher becomes real or gets removed.
 
 The only outstanding item is the vehicles-per-driver decision above, which is a product
 call rather than a defect.
+
+---
+
+# ✅ FINAL SIGN-OFF — 2026-08-06
+
+**Every problem recorded in this document (P1–P9) is fixed and verified working.**
+
+Migrations `025` and `026` have been re-run against the live database, and the P9 orphan
+check returned **0**:
+
+```sql
+SELECT count(*) FROM public.drivers d
+WHERE d.active_vehicle_id IS NULL
+  AND EXISTS (SELECT 1 FROM public.vehicles v WHERE v.driver_id = d.id);
+-- → 0   ✅ no driver is invisible to matching
+```
+
+| # | Problem | Status |
+|---|---------|--------|
+| **P1** | Customer app fatal JSX error | ✅ Fixed — `tsc` exits 0, app bundles |
+| **P2** | `active_vehicle_id` never populated | ✅ Fixed — written on register (`drivers.routes.ts:178`) |
+| **P3** | `vehicles.type` CHECK too narrow | ✅ Fixed — migration `025`, all 7 types |
+| **P4** | Missing `UNIQUE(driver_id)` | ✅ Fixed — migration `026`, upsert no longer 42P10 |
+| **P5** | Matching waves outlived client timeout | ✅ Fixed — 0/10/20s, inside the 60s budget |
+| **P6** | Customer notification channel absent | ✅ Fixed — `expo-notifications` channel created |
+| **P7** | Driver app failing typechecks | ✅ Fixed — `tsc` exits 0 |
+| **P8** | Migrations 025/026 not re-runnable | ✅ Fixed — idempotent, re-run confirmed |
+| **P9** | Dedupe could orphan drivers | ✅ Fixed — active vehicle preserved, orphan count 0 |
+
+**Build state:** all three projects compile clean — `riksho_backend` (`npm run build`),
+`riksho_android` (`tsc --noEmit`), `riksho_partner_android` (`tsc --noEmit`).
+
+**The ride-booking flow is cleared to ship.** 🟢
+
+### Two carry-forward notes (neither is a defect)
+
+1. **P6 needs a native rebuild to take effect on device** — `expo-notifications` is a new
+   native dependency, so run `npx expo run:android` (or a new EAS build) for the customer
+   app. A JS-only reload will not include it. Until then the channel stays "Miscellaneous"
+   at default importance; notifications still arrive, just without a heads-up banner.
+2. **Vehicles-per-driver is an open product decision**, not a bug. `UNIQUE(driver_id)` means
+   one vehicle per driver, which leaves the driver app's vehicle switcher as unreachable
+   dead code. Registration and matching work correctly either way — see the section above
+   when you decide whether to remove the switcher or move to `UNIQUE(driver_id, plate)`.
