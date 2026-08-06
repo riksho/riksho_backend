@@ -3,22 +3,36 @@
 -- constraint ('bike', 'auto', 'car'). This prevents drivers from registering 
 -- e_rickshaw, tempo, mini_truck, or truck.
 
+-- Discover the day-one constraint by definition rather than by name (it was
+-- declared inline in 001, so its name is whatever Postgres auto-assigned).
+--
+-- Read from pg_constraint with contype = 'c' rather than
+-- information_schema.check_constraints: the latter also lists NOT NULL
+-- pseudo-constraints, and `type IS NOT NULL` matches a '%type%' filter. On
+-- Postgres 17+ those are real droppable catalog entries, so a looser filter
+-- risks silently dropping NOT NULL from vehicles.type.
 DO $$
 DECLARE
-    constraint_name TEXT;
+    con_name TEXT;
 BEGIN
-    FOR constraint_name IN
-        SELECT tc.constraint_name
-        FROM information_schema.table_constraints tc
-        JOIN information_schema.check_constraints cc ON tc.constraint_name = cc.constraint_name
-        WHERE tc.table_name = 'vehicles' 
-          AND tc.constraint_schema = 'public'
-          AND cc.check_clause ILIKE '%type%'
+    FOR con_name IN
+        SELECT c.conname
+        FROM pg_constraint c
+        JOIN pg_class t ON t.oid = c.conrelid
+        JOIN pg_namespace n ON n.oid = t.relnamespace
+        WHERE t.relname = 'vehicles'
+          AND n.nspname = 'public'
+          AND c.contype = 'c'
+          AND pg_get_constraintdef(c.oid) ILIKE '%type%'
     LOOP
-        EXECUTE format('ALTER TABLE public.vehicles DROP CONSTRAINT IF EXISTS %I;', constraint_name);
+        EXECUTE format('ALTER TABLE public.vehicles DROP CONSTRAINT IF EXISTS %I;', con_name);
     END LOOP;
 END
 $$;
 
-ALTER TABLE public.vehicles ADD CONSTRAINT vehicles_type_check 
+-- Idempotent: migrate.ts re-runs every .sql file on each invocation (no tracking
+-- table), so a bare ADD CONSTRAINT would fail with 42710 on the second run.
+ALTER TABLE public.vehicles DROP CONSTRAINT IF EXISTS vehicles_type_check;
+
+ALTER TABLE public.vehicles ADD CONSTRAINT vehicles_type_check
   CHECK (type IN ('bike', 'auto', 'e_rickshaw', 'car', 'tempo', 'mini_truck', 'truck'));

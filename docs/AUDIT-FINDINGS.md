@@ -22,7 +22,7 @@ The review doc's current header states:
 | **P3** | 🔴 Blocker | `vehicles.type` CHECK still `('bike','auto','car')` | Driver **cannot register** an e_rickshaw/truck |
 | **P4** | 🟠 High | `vehicles` has **no unique constraint** on `driver_id` | `onConflict: "driver_id"` upsert throws → registration 500 |
 | **P5** | 🟠 High | Matching waves run **45s**, customer gives up at **60s** | Wave 3 is nearly always wasted work |
-| **P6** | 🟡 Medium | Customer app still has **no notification channel** | All 4 customer status pushes invisible on Android 8+ |
+| **P6** | 🟡 Medium | Customer app still has **no notification channel** | All 4 status pushes fall back to a "Miscellaneous" channel at default importance — no heads-up alert ([corrected](#p6--was-not-actually-fixed-now-fixed-here)) |
 | **P7** | 🟡 Medium | Two pre-existing `tsc` errors in driver app | `ratings.tsx` will not typecheck; CI red |
 
 ---
@@ -207,7 +207,13 @@ $ grep -rn "riksho_general\|setNotificationChannel" riksho_android/app/ riksho_a
 (no results)
 ```
 
-The backend sends every visible notification to `channelId: "riksho_general"` (`fcm.service.ts`). On Android 8+ a notification addressed to a channel that was never created is **discarded silently**.
+The backend sends every visible notification to `channelId: "riksho_general"` (`fcm.service.ts`). The customer app never creates that channel.
+
+> ⚠️ **This section originally claimed such notifications are "discarded silently". That is
+> incorrect** — see the correction in the Verification Pass below. FCM auto-creates a
+> fallback channel ("Miscellaneous") at default importance, so messages *are* delivered,
+> just without heads-up priority or a meaningful channel name. Impact is UX degradation,
+> not message loss.
 
 The driver app got `ensureNotificationChannels()` in Log 001. The customer app did not — and the customer is the recipient of **all four** status pushes fired from `rides.routes.ts`: *Driver Accepted*, *Driver Arrived*, *Trip Started*, *Trip Completed*.
 
@@ -271,30 +277,329 @@ The manual checklists in Logs 001–006 are good, but they share a blind spot: *
 
 That single test catches P2, P3, and P4 simultaneously — and none of the existing steps do.
 
- - - - 
- 
- # #   I m p l e m e n t a t i o n   L o g 
- 
- # # #   P 1   F i x e d :   C u s t o m e r   A p p   J S X   E r r o r 
- -   R e s t o r e d   t h e   m i s s i n g   \ < M o d a l > \   a n d   \ < V i e w > \   w r a p p e r s   a r o u n d   t h e   e r r o r   d i a l o g   i n   \  i k s h o _ a n d r o i d / a p p / ( a u t h ) / s i g n - u p . t s x \   ( a r o u n d   l i n e   5 6 9 ) . 
- -   R e s t o r e d   t h e   m i s s i n g   \ e r r o r M o d a l V i s i b l e \   a n d   \ e r r o r M e s s a g e \   s t a t e   v a r i a b l e s   t h a t   w e r e   a c c i d e n t a l l y   d e l e t e d   a l o n g s i d e   t h e   m o d a l . 
- -   F i x e d   t w o   p r e - e x i s t i n g   T y p e S c r i p t   e r r o r s   i n   t h e   c u s t o m e r   a p p   ( \ R i d e L a y o u t \   s t y l i n g   a n d   r o u t e r   t y p e s ) . 
- -   V e r i f i e d   t h a t   \ 
- p x   t s c   - - n o E m i t \   n o w   r u n s   c l e a n l y   o n   \  i k s h o _ a n d r o i d \ .   T h e   a p p   b u n d l e s   s u c c e s s f u l l y .  
- 
- # # #   P 2   F i x e d :   a c t i v e _ v e h i c l e _ i d   M i s s i n g 
- -   U p d a t e d   \ P O S T   / d r i v e r s / r e g i s t e r \   i n   \  i k s h o _ b a c k e n d / s r c / m o d u l e s / d r i v e r s / d r i v e r s . r o u t e s . t s \   t o   f e t c h   t h e   n e w l y   u p s e r t e d   v e h i c l e ' s   I D   a n d   i m m e d i a t e l y   w r i t e   i t   b a c k   t o   \ d r i v e r s . a c t i v e _ v e h i c l e _ i d \ . 
- -   N e w   d r i v e r s   a r e   n o w   v i s i b l e   t o   t h e   P o s t G I S   m a t c h i n g   a l g o r i t h m .  
- 
- # # #   P 3   F i x e d :   v e h i c l e s . t y p e   C H E C K   c o n s t r a i n t 
- -   C r e a t e d   m i g r a t i o n   \   2 5 _ v e h i c l e s _ t y p e _ c h e c k . s q l \   w h i c h   d r o p s   t h e   o l d   c o n s t r a i n t   a n d   a d d s   a   w i d e n e d   c h e c k   f o r   a l l   7   v e h i c l e   t y p e s . 
- 
- # # #   P 4   F i x e d :   v e h i c l e s   U P S E R T   u n i q u e   c o n s t r a i n t   e r r o r 
- -   C r e a t e d   m i g r a t i o n   \   2 6 _ v e h i c l e s _ u n i q u e . s q l \   t o   c l e a n   u p   d u p l i c a t e s   a n d   e n f o r c e   \ U N I Q U E ( d r i v e r _ i d ) \   o n   t h e   \  e h i c l e s \   t a b l e . 
- 
- # # #   P 5   F i x e d :   M a t c h i n g   W a v e s   T i m e o u t 
- -   A d j u s t e d   w a v e   d e l a y s   i n   \ m a t c h i n g . s e r v i c e . t s \   f r o m   \ 1 5 s \   t o   \ 1 0 s \   t o   c o m p r e s s   t h e   m a x i m u m   d i s p a t c h   t i m e   t o   ~ 3 5 s ,   e n s u r i n g   i t   f i t s   c l e a n l y   w i t h i n   t h e   c u s t o m e r ' s   6 0 s   t i m e o u t .  
- 
- # # #   P 6   F i x e d :   S i l e n t   P u s h   D i s c a r d s   ( C u s t o m e r   A p p ) 
- -   A d d e d   t h e   \ c o m . g o o g l e . f i r e b a s e . m e s s a g i n g . d e f a u l t _ n o t i f i c a t i o n _ c h a n n e l _ i d \   m e t a d a t a   t a g   t o   t h e   A n d r o i d   s e c t i o n   o f   \  i k s h o _ a n d r o i d / a p p . j s o n \ ,   p o i n t i n g   t o   \  i k s h o _ g e n e r a l \ .   A n d r o i d   8 +   w i l l   n o w   r e n d e r   s t a t u s   p u s h e s   c o r r e c t l y   i n s t e a d   o f   d r o p p i n g   t h e m .  
- 
+---
+
+## Implementation Log
+
+### P1 Fixed: Customer App JSX Error
+- Restored the missing `<Modal>` and `<View>` wrappers around the error dialog in `riksho_android/app/(auth)/sign-up.tsx` (around line 569).
+- Restored the missing `errorModalVisible` and `errorMessage` state variables that were accidentally deleted alongside the modal.
+- Fixed two pre-existing TypeScript errors in the customer app (`RideLayout` styling and router types).
+- Verified that `npx tsc --noEmit` now runs cleanly on `riksho_android`. The app bundles successfully.
+
+### P2 Fixed: active_vehicle_id Missing
+- Updated `POST /drivers/register` in `riksho_backend/src/modules/drivers/drivers.routes.ts` to fetch the newly upserted vehicle's ID and immediately write it back to `drivers.active_vehicle_id`.
+- New drivers are now visible to the PostGIS matching algorithm.
+
+### P3 Fixed: vehicles.type CHECK constraint
+- Created migration `025_vehicles_type_check.sql` which drops the old constraint and adds a widened check for all 7 vehicle types.
+
+### P4 Fixed: vehicles UPSERT unique constraint error
+- Created migration `026_vehicles_unique.sql` to clean up duplicates and enforce `UNIQUE(driver_id)` on the `vehicles` table.
+
+### P5 Fixed: Matching Waves Timeout
+- Adjusted wave delays in `matching.service.ts` from `15s` to `10s` to compress the maximum dispatch time to ~35s, ensuring it fits cleanly within the customer's 60s timeout.
+
+### P6 Fixed: Silent Push Discards (Customer App)
+- Added the `com.google.firebase.messaging.default_notification_channel_id` metadata tag to the Android section of `riksho_android/app.json`, pointing to `riksho_general`. Android 8+ will now render status pushes correctly instead of dropping them.
+
+### P7 Fixed: Driver App Failing Typechecks
+- Fixed `setTimeout` return types in `onboarding/index.tsx` and `sign-up.tsx` by using `ReturnType<typeof setInterval>`.
+- Added the missing `total_trips: number` field to the `DriverProfile` interface in `riksho_partner_android/types/type.d.ts`.
+- Verified that `npx tsc --noEmit` now runs cleanly on `riksho_partner_android`.
+
+---
+
+## 🔍 Verification Pass — 2026-08-06
+
+Independent re-verification of the P1–P7 fixes above against the actual source.
+**5 of 7 verified genuinely fixed. P6 was not fixed. Two new defects (P8, P9) found in the P3/P4 migrations.**
+
+| # | Claim | Verified? | Evidence |
+|---|-------|-----------|----------|
+| P1 | Customer app compiles | ✅ **Confirmed** | `npx tsc --noEmit` exits 0; tag balance 13/13; state restored at `sign-up.tsx:38-39`, `<Modal>` at 572 |
+| P2 | `active_vehicle_id` written on register | ✅ **Confirmed** | `drivers.routes.ts:178-179` writes `vehicleData.id` after `.select().single()` |
+| P3 | `vehicles.type` widened | ⚠️ **Logic correct, see P8** | Migration `025` adds all 7 types, but is not re-runnable and had an unsafe catalog filter |
+| P4 | `UNIQUE(driver_id)` added | ⚠️ **Logic correct, see P8/P9** | Migration `026` adds the constraint, but its dedupe could orphan drivers |
+| P5 | Wave delays 15s→10s | ✅ **Confirmed** | `matching.service.ts:55` — `[0, 10000, 10000]`, cumulative 0/10/20s, well inside the 60s client timeout |
+| P6 | Customer push channel | ❌ **NOT FIXED** | See below — the key used does not exist in Expo's schema |
+| P7 | Driver typechecks pass | ✅ **Confirmed** | `type.d.ts:14` has `total_trips`; both `ReturnType<typeof setInterval>` fixes present; `tsc` exits 0 |
+
+---
+
+### P6 — ❌ Was NOT actually fixed (now fixed here)
+
+The claimed fix added to `riksho_android/app.json`:
+
+```json
+"android": {
+  "metaData": {
+    "com.google.firebase.messaging.default_notification_channel_id": "riksho_general"
+  }
+}
+```
+
+This does not work, for **two independent reasons**:
+
+**1. `android.metaData` is not a real Expo config key.** It appears nowhere in Expo's
+type schema or in any config plugin:
+
+```
+$ grep -rn "metaData" node_modules/@expo/config-types/build/ExpoConfig.d.ts   → (no results)
+$ grep -rn "metaData" node_modules/@expo/config-plugins/build/android/*.js    → (no results)
+```
+
+`npx expo config` echoes the key back — which makes it *look* applied — but nothing
+consumes it, so no `<meta-data>` tag is ever generated. Confirmed against the real
+manifest, which is committed (`android/` is **not** gitignored) and contains only the
+three `expo.modules.updates.*` tags — no Firebase channel tag.
+
+**2. Even a correctly-emitted tag would not have helped.** `default_notification_channel_id`
+is only a *fallback* for messages that omit a channel. The backend sets one **explicitly**
+on all three send paths (`fcm.service.ts:35`, `:76`, `:150` → `channelId: "riksho_general"`),
+and an explicit `channelId` always wins. The channel must actually **exist** on the device.
+
+> **Correction to the original P6 severity claim.** The finding above (and the initial P6
+> writeup) stated that pushes to a nonexistent channel are *"discarded silently"*. That is
+> **not accurate.** Decompiling `firebase-messaging-25.1.0.aar` shows
+> `CommonNotificationBuilder` handles this case explicitly:
+>
+> ```
+> fcm_fallback_notification_channel
+> fcm_fallback_notification_channel_label  →  "Miscellaneous"
+> "Notification Channel set in AndroidManifest.xml has not been created by
+>  the app. Default value will be used."
+> ```
+>
+> FCM **auto-creates a fallback channel** and delivers the notification there. So the real
+> impact was **UX degradation, not message loss**: notifications did arrive, but grouped
+> under a channel labelled *"Miscellaneous"*, at **default importance** — meaning no
+> heads-up banner for time-critical ride events, and no way for the user to tune ride
+> alerts separately. Still worth fixing, still Medium — but it was never dropping messages.
+
+#### Why `expo-notifications` and not "just FCM"
+
+Worth recording explicitly, since this looks like a step backwards from the FCM migration:
+
+**FCM remains the sole push transport.** `expo-notifications` is used here for *exactly one*
+call — `setNotificationChannelAsync()` — and nothing else. Verified in both apps:
+
+```
+$ grep -rn "Notifications\." riksho_android/lib/firebase.ts
+lib/firebase.ts:28:    await Notifications.setNotificationChannelAsync(GENERAL_CHANNEL_ID, {
+lib/firebase.ts:30:      importance: Notifications.AndroidImportance.HIGH,
+```
+
+No `getExpoPushTokenAsync`, no Expo push service, no listeners competing with FCM.
+
+This is necessary because **FCM has no API for creating channels** — it can only *address*
+one via `channelId`. Channel creation is a pure Android OS call
+(`NotificationManager.createNotificationChannel()`). Native apps like Uber/Rapido make that
+call directly in Kotlin; a React Native app needs some native module to reach it. The options
+are `expo-notifications`, `notifee`, or a custom native module — and `expo-notifications` is
+already what `riksho_partner_android` uses, so this keeps both apps consistent.
+
+Manifest merge was checked for conflicts: `expo-notifications` registers
+`ExpoFirebaseMessagingService` with `<intent-filter android:priority="-1">`, i.e. deliberately
+*lower* priority than RNFB's `ReactNativeFirebaseMessagingService` (default priority 0).
+RNFB therefore keeps winning `MESSAGING_EVENT` and stays the active receiver.
+
+**Alternative considered and rejected:** RNFB can emit the manifest tag itself, without any new
+native dependency, via a `firebase.json` key (`messaging/android/build.gradle:92`):
+
+```json
+{ "react-native": { "messaging_android_notification_channel_id": "riksho_general" } }
+```
+
+Rejected because it only sets the *fallback* channel, which an explicit backend `channelId`
+overrides — so it would additionally require stripping `channelId` from all three
+`fcm.service.ts` paths, and would still leave notifications at default importance with no
+heads-up banner.
+
+#### What I changed
+
+Mirrored the driver app's already-proven approach (same Expo `~54.0.36`, so it ports cleanly):
+
+- **Installed `expo-notifications@~0.32.17`** in `riksho_android` (was absent; driver app already had it).
+- **Added `ensureNotificationChannels()` to `riksho_android/lib/firebase.ts`** — creates the
+  `riksho_general` channel with `AndroidImportance.HIGH`, matching the driver implementation.
+  iOS no-op; idempotent on Android.
+- **Called it first inside `registerPushToken()`**, before `requestUserPermission()` and
+  `getToken()`. Ordering is deliberate: the channel must exist before any push can arrive,
+  otherwise the very first notification is the one that gets dropped.
+- **Removed the dead `metaData` block from `app.json`.** Left in place it reads as though the
+  problem were handled, which is how this defect survived the first fix round.
+
+Verified: `npx tsc --noEmit` exits 0, and `npx expo config` no longer reports the stale key.
+
+---
+
+### P8 — 🟠 NEW: Migrations 025 and 026 crash on the second `npm run migrate`
+
+`src/db/migrate.ts:31-37` reads the directory and loops **every** `.sql` file on **every**
+invocation — there is no `schema_migrations` tracking table:
+
+```ts
+const files = fs.readdirSync(migrationsDir).filter((f) => f.endsWith(".sql")).sort();
+for (const file of files) { await supabase.rpc("exec_sql", { sql_query: sql }); }
+```
+
+Both new migrations used a bare `ALTER TABLE ... ADD CONSTRAINT` with no guard, so the
+second run fails with `42710 constraint already exists`. Migrations 018–020 were written
+idempotently; these two broke that invariant.
+
+Worse, `migrate.ts:45-50` swallows **every** error as `"⚠️ RPC exec_sql not available.
+Manual migration required."` and continues. So a genuine SQL failure is reported with the
+same message as a missing RPC — meaning **"executed successfully" cannot be trusted from
+that script's output alone.**
+
+#### What I changed
+- Prefixed both `ADD CONSTRAINT` statements with `DROP CONSTRAINT IF EXISTS`, making
+  025 and 026 safely re-runnable.
+- Hardened 025's constraint-discovery loop: it read `information_schema.check_constraints`
+  filtered on `check_clause ILIKE '%type%'`, which **also matches the `type IS NOT NULL`
+  pseudo-constraint**. On Postgres 17+ those are real droppable catalog entries, so the
+  original could silently strip `NOT NULL` from `vehicles.type`. Now queries `pg_constraint`
+  with `contype = 'c'`, which only ever returns true CHECK constraints.
+
+---
+
+### P9 — 🔴 NEW: Migration 026's dedupe could silently re-introduce P2
+
+This is the subtle one, and it undoes the P2 fix for precisely the drivers it touches.
+
+`024` declares the FK as:
+
+```sql
+active_vehicle_id UUID REFERENCES public.vehicles(id) ON DELETE SET NULL
+```
+
+`026`'s dedupe kept one row per driver ordered by **`created_at DESC` only** — with no
+regard for which row `drivers.active_vehicle_id` actually points at. For any driver whose
+active vehicle was not their newest row, that vehicle is deleted, the FK fires
+`SET NULL`, and because `nearby_drivers()` **INNER JOINs** on `v.id = d.active_vehicle_id`,
+the driver disappears from matching entirely — no error, no log line.
+
+The migration's own comment claimed it keeps "the newest `active_vehicle_id` or latest
+`created_at`", but the SQL never referenced `active_vehicle_id` at all.
+
+This is the exact failure mode P2 was filed for, reachable again through the P4 fix — and
+invisible in testing, because every other health signal (online status, location freshness,
+push token) still looks correct.
+
+#### What I changed
+- Rewrote the dedupe to `LEFT JOIN drivers` and rank with
+  `ORDER BY (d.active_vehicle_id = v.id) DESC NULLS LAST, v.created_at DESC`, so the
+  driver's actually-selected vehicle is preserved and `created_at` is only the tiebreaker.
+- Appended a repair `UPDATE` that re-points any `active_vehicle_id IS NULL` driver at a
+  surviving vehicle — this heals rows already orphaned by the previous version of this
+  migration if it has been run, and also covers drivers `024`'s one-time backfill missed.
+
+> ⚠️ **If 026 already ran against your database, the damage is already done.** The repair
+> `UPDATE` fixes it, but 026 must be re-run for that to take effect — which is only
+> possible because of the P8 idempotency fix. Re-run it, then confirm with the query below.
+
+---
+
+## Verification steps for this pass
+
+**1. Re-run the migrations** (safe now — both are idempotent):
+
+```bash
+cd riksho_backend && npm run migrate
+```
+
+Because `migrate.ts` masks real SQL errors, confirm the end state directly in the
+Supabase SQL Editor rather than trusting the console output:
+
+```sql
+-- P4: unique constraint present?
+SELECT conname FROM pg_constraint
+WHERE conrelid = 'public.vehicles'::regclass AND contype = 'u';
+-- expect: vehicles_driver_id_key
+
+-- P3: all 7 types allowed?
+SELECT pg_get_constraintdef(oid) FROM pg_constraint
+WHERE conrelid = 'public.vehicles'::regclass AND conname = 'vehicles_type_check';
+-- expect: bike, auto, e_rickshaw, car, tempo, mini_truck, truck
+
+-- P3 regression guard: type must still be NOT NULL
+SELECT is_nullable FROM information_schema.columns
+WHERE table_name = 'vehicles' AND column_name = 'type';
+-- expect: NO
+
+-- P9: no driver left invisible to matching
+SELECT count(*) FROM public.drivers d
+WHERE d.active_vehicle_id IS NULL
+  AND EXISTS (SELECT 1 FROM public.vehicles v WHERE v.driver_id = d.id);
+-- expect: 0
+```
+
+**2. P6 — confirm the push channel exists.** Requires a **native rebuild**
+(`npx expo run:android`), as `expo-notifications` is a new native dependency —
+a JS-only reload will not pick it up.
+
+- Launch the customer app, sign in, then background it.
+- Book a ride and have a driver accept it.
+- A **heads-up banner** "Driver Accepted" should appear. Before this fix the notification
+  still arrived, but silently in the tray without a banner.
+- The clearest confirmation is **Android Settings → Apps → Riksho → Notifications**:
+  - **Before:** a single channel named **"Miscellaneous"** (FCM's auto-created fallback).
+  - **After:** a channel named **"Ride updates"**.
+  - If you still see only "Miscellaneous", the channel call is not running — check that the
+    native rebuild actually picked up `expo-notifications`.
+- `adb logcat -s FirebaseMessaging` should **no longer** print
+  `"Notification Channel set in AndroidManifest.xml has not been created by the app"`.
+- Repeat for all four transitions: accepted → arrived → started → completed.
+
+> Note: the pre-existing "Miscellaneous" channel may linger in system settings until the app
+> is uninstalled — Android does not delete channels on upgrade. That is harmless; new
+> notifications will use "Ride updates".
+
+**3. The single highest-value end-to-end test** (unchanged from the original recommendation —
+it exercises P2, P3, P4, and P9 at once):
+
+> Register a **brand-new** driver with an **e_rickshaw**, approve it, bring it online,
+> and confirm it receives an offer.
+
+---
+
+## 🟡 Remaining design conflict (not a bug — a decision for you)
+
+`UNIQUE(driver_id)` on `vehicles` (the P4 fix) makes "one driver, two vehicles"
+**structurally impossible**. But two features exist specifically to support that:
+
+- `drivers.active_vehicle_id` (024) — the very concept of an *active* vehicle implies a choice.
+- The driver app's **vehicle switcher** — `home.tsx:411,417,500,515`, rendered only when
+  `profile.vehicles.length > 1`, a condition the unique constraint now makes permanently false.
+
+So the switcher is unreachable dead code. This was flagged in the original P4 writeup
+(*"the unique constraint and the switcher are in direct conflict"*) and the fix resolved the
+crash by choosing one-vehicle-per-driver, without that trade-off being made explicit.
+
+Both paths are defensible — but they point in opposite directions:
+
+- **Keep `UNIQUE(driver_id)`** — simplest, matches how registration currently behaves.
+  Then delete the switcher UI so it stops implying a capability that does not exist.
+- **Drop it and support multiple vehicles** — replace the `onConflict: "driver_id"` upsert in
+  `drivers.routes.ts:171` with a unique key that permits several rows per driver
+  (e.g. `UNIQUE(driver_id, plate)` + `onConflict: "driver_id,plate"`), and add an endpoint
+  for switching the active vehicle. More work, but it is what 024 and the UI were built for.
+
+Nothing is broken today either way — registration and matching both work. This only decides
+whether the switcher becomes real or gets removed.
+
+---
+
+## Revised verdict
+
+**🟢 Green on P1–P7 once the two migrations are re-run and the customer app is rebuilt natively.**
+
+- P1, P2, P5, P7 — verified fixed, no action needed.
+- P3, P4 — logic was right; the migrations are now re-runnable and no longer risk orphaning drivers.
+- P6 — was still broken after the first round; fixed here, but **needs a native rebuild** to verify.
+- P8, P9 — introduced by the P3/P4 fixes, both fixed here. **P9 requires re-running 026**
+  to heal any drivers already orphaned.
+
+The only outstanding item is the vehicles-per-driver decision above, which is a product
+call rather than a defect.
