@@ -3,6 +3,7 @@ import { authGuard } from "../../common/auth.guard.js";
 import { requireRole } from "../../common/roles.guard.js";
 import { supabaseAdmin } from "../../config/supabase.js";
 import { DriverLocationSchema, DriverRegisterSchema, DriverDocumentSchema } from "../../common/schemas.js";
+import { withSignedUrls } from "../../common/document-urls.js";
 
 export async function driversRoutes(app: FastifyInstance) {
   // POST /drivers/online — Go online (drivers only)
@@ -123,7 +124,7 @@ export async function driversRoutes(app: FastifyInstance) {
 
     const { data, error } = await supabaseAdmin
       .from("drivers")
-      .select("*, vehicles!vehicles_driver_id_fkey(*)")
+      .select("*, vehicles!vehicles_driver_id_fkey(*), driver_documents(*)")
       .eq("id", driverId)
       .single();
 
@@ -131,7 +132,12 @@ export async function driversRoutes(app: FastifyInstance) {
       return reply.status(404).send({ error: "Driver profile not found" });
     }
 
-    return reply.send(data);
+    // Sign document paths server-side — the bucket is private, so the app
+    // cannot build a working URL itself (needed for the profile avatar).
+    return reply.send({
+      ...data,
+      driver_documents: await withSignedUrls(data.driver_documents),
+    });
   });
 
   // POST /drivers/register — Register as a driver (onboarding)
@@ -228,7 +234,7 @@ export async function driversRoutes(app: FastifyInstance) {
       return reply.status(500).send({ error: "Failed to fetch documents" });
     }
 
-    return reply.send(data);
+    return reply.send(await withSignedUrls(data));
   });
 
   // GET /drivers/trips — Paginated completed rides history

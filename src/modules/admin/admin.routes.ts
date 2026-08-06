@@ -4,6 +4,8 @@ import { requireRole } from "../../common/roles.guard.js";
 import { supabaseAdmin } from "../../config/supabase.js";
 import { logger } from "../../common/logger.js";
 import { z } from "zod";
+import { sendPush } from "../notifications/push.service.js";
+import { withSignedUrls } from "../../common/document-urls.js";
 
 const ReasonSchema = z.object({ reason: z.string().min(1) });
 
@@ -55,11 +57,11 @@ export async function adminRoutes(app: FastifyInstance) {
   app.get("/admin/drivers/:id", guard, async (req, reply) => {
     const { id } = req.params as { id: string };
     const { data, error } = await supabaseAdmin
-      .from("drivers").select("*, vehicles!vehicles_driver_id_fkey(*)").eq("id", id).single();
+      .from("drivers").select("*, vehicles!vehicles_driver_id_fkey(*), driver_documents(*)").eq("id", id).single();
       
     if (error || !data) return reply.status(404).send({ error: "Driver not found" });
-    
-    return data;
+
+    return { ...data, driver_documents: await withSignedUrls(data.driver_documents) };
   });
 
   const setStatus = async (id: string, verified: boolean, status: string, adminId: string, reason?: string) => {
@@ -80,6 +82,15 @@ export async function adminRoutes(app: FastifyInstance) {
       logger.error({ id, error: insertError }, "Failed to record admin action (non-fatal for driver state)");
     }
     
+    if (status === "approved") {
+      await sendPush([id], {
+        title: "Profile Approved \u2705",
+        body: "Congratulations! Your driver profile has been verified. You can now go online and accept rides."
+      }).catch(err => {
+        logger.error({ id, err }, "Failed to send approval push notification");
+      });
+    }
+
     logger.info({ id, status, adminId }, "Admin changed driver verification");
   };
 

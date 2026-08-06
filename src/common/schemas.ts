@@ -57,7 +57,13 @@ export const DriverRegisterSchema = z.object({
 });
 
 export const DriverDocumentSchema = z.object({
-  doc_type: z.enum(["license", "rc", "insurance", "vehicle_photo", "profile_photo"]),
+  // Must stay in sync with the driver_documents.doc_type CHECK constraint
+  // (migration 027) and REQUIRED_DOCS in the driver app's documents screen.
+  doc_type: z.enum([
+    "license", "license_front", "license_back",
+    "id_front", "id_back",
+    "rc", "insurance", "vehicle_photo", "profile_photo",
+  ]),
   storage_path: z.string().min(1),
 });
 
