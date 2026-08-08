@@ -95,6 +95,11 @@ export async function adminRoutes(app: FastifyInstance) {
       throw new Error("Failed to update status");
     }
 
+    // Also update the status of all documents uploaded by this driver
+    await supabaseAdmin.from("driver_documents")
+      .update({ status: status })
+      .eq("driver_id", id);
+
     const { error: insertError } = await supabaseAdmin.from("admin_actions").insert({
       admin_id: adminId, driver_id: id, action: status, reason: reason ?? null,
     });
