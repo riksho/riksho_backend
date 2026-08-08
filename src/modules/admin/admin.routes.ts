@@ -54,6 +54,27 @@ export async function adminRoutes(app: FastifyInstance) {
     return data ?? [];
   });
 
+  app.get("/admin/incomplete-drivers", guard, async () => {
+    const { data: drivers, error: driversError } = await supabaseAdmin.from("drivers").select("id");
+    if (driversError) throw driversError;
+    const driverIds = new Set(drivers.map(d => d.id));
+
+    const { data: usersData, error: usersError } = await supabaseAdmin.auth.admin.listUsers();
+    if (usersError) throw usersError;
+
+    const incompleteUsers = usersData.users
+      .filter(u => u.phone && !driverIds.has(u.id))
+      .map(u => ({
+        id: u.id,
+        phone: u.phone,
+        created_at: u.created_at,
+        last_sign_in_at: u.last_sign_in_at,
+      }))
+      .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+
+    return incompleteUsers;
+  });
+
   app.get("/admin/drivers/:id", guard, async (req, reply) => {
     const { id } = req.params as { id: string };
     const { data, error } = await supabaseAdmin
