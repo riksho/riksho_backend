@@ -100,7 +100,7 @@ export async function findNearbyDrivers(
     
     let query = supabaseAdmin
       .from("drivers")
-      .select("id, name, partner_type, vehicles!inner(type, capacity_kg)")
+      .select("id, name, partner_type, vehicles!vehicles_driver_id_fkey!inner(type, capacity_kg)")
       .in("id", driverIds)
       .eq("status", "online")
       .eq("is_verified", true);
@@ -116,7 +116,11 @@ export async function findNearbyDrivers(
       query = query.eq("partner_type", "cab_bike").eq("vehicles.type", vehicleType);
     }
 
-    const { data: onlineDrivers } = await query;
+    const { data: onlineDrivers, error: onlineDriversError } = await query;
+
+    if (onlineDriversError) {
+      logger.error({ rideId, error: onlineDriversError }, "Error querying online drivers");
+    }
 
     if (!onlineDrivers?.length) {
       logger.warn({ rideId, wave: i + 1 }, "No online drivers matching criteria in this wave");
