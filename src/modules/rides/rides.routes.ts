@@ -233,6 +233,63 @@ export async function ridesRoutes(app: FastifyInstance) {
     return reply.send(data || []);
   });
 
+  // POST /rides/:id/fare — Update offered fare and re-trigger matching
+  app.post("/rides/:id/fare", { preHandler: [authGuard, requireRole("customer")] }, async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const customerId = request.user!.id;
+    
+    const FareUpdateSchema = z.object({
+      extra_amount: z.number().min(1),
+    });
+    
+    const body = FareUpdateSchema.parse(request.body);
+
+    const { data: ride } = await supabaseAdmin
+      .from("rides")
+      .select("status, customer_id, offered_fare, fare_estimate, origin_lat, origin_lng, vehicle_type, service_type, cargo_weight_kg")
+      .eq("id", id)
+      .single();
+
+    if (!ride || ride.customer_id !== customerId) {
+      return reply.status(403).send({ error: "Not authorized to update this ride" });
+    }
+
+    if (ride.status !== "requested") {
+      return reply.status(400).send({ error: "Can only update fare for requested rides" });
+    }
+
+    const currentFare = ride.offered_fare ?? ride.fare_estimate;
+    const newFare = currentFare + body.extra_amount;
+
+    // Update offered_fare
+    const { error } = await supabaseAdmin
+      .from("rides")
+      .update({ offered_fare: newFare })
+      .eq("id", id);
+
+    if (error) {
+      return reply.status(500).send({ error: "Failed to update fare" });
+    }
+
+    await supabaseAdmin.from("ride_events").insert({
+      ride_id: id,
+      type: "fare_updated",
+      payload: { old_fare: currentFare, new_fare: newFare, extra_amount: body.extra_amount },
+    });
+
+    // Re-trigger matching to notify drivers of the updated fare
+    findNearbyDrivers(
+      ride.origin_lat,
+      ride.origin_lng,
+      ride.vehicle_type,
+      id,
+      ride.service_type,
+      ride.cargo_weight_kg
+    ).catch(() => {});
+
+    return reply.send({ success: true, offered_fare: newFare });
+  });
+
   // POST /rides/:id/cancel — Cancel a ride (participant check)
   app.post("/rides/:id/cancel", { preHandler: [authGuard] }, async (request, reply) => {
     const { id } = request.params as { id: string };
