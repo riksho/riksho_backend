@@ -24,9 +24,11 @@ export async function broadcastRideStatus(
         Authorization: `Bearer ${env.SUPABASE_SERVICE_ROLE_KEY}`,
       },
       body: JSON.stringify({
-        channel: `ride:${rideId}`,
-        event: "status_change",
-        payload: { status, ...payload },
+        messages: [{
+          topic: `ride:${rideId}`,
+          event: "status_change",
+          payload: { status, ...payload },
+        }],
       }),
     });
 
@@ -59,9 +61,11 @@ export async function broadcastOrderStatus(
         Authorization: `Bearer ${env.SUPABASE_SERVICE_ROLE_KEY}`,
       },
       body: JSON.stringify({
-        channel: `order:${orderId}`,
-        event: "status_change",
-        payload: { status, ...payload },
+        messages: [{
+          topic: `order:${orderId}`,
+          event: "status_change",
+          payload: { status, ...payload },
+        }],
       }),
     });
 
@@ -107,9 +111,11 @@ export async function broadcastRideOffer(
         Authorization: `Bearer ${env.SUPABASE_SERVICE_ROLE_KEY}`,
       },
       body: JSON.stringify({
-        channel: `driver:${driverId}`,
-        event: "ride_offer",
-        payload,
+        messages: [{
+          topic: `driver:${driverId}`,
+          event: "ride_offer",
+          payload,
+        }],
       }),
     });
 
