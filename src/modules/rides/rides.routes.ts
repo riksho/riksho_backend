@@ -277,6 +277,12 @@ export async function ridesRoutes(app: FastifyInstance) {
       payload: { old_fare: currentFare, new_fare: newFare, extra_amount: body.extra_amount },
     });
 
+    // Clear previous declines so drivers who declined the lower fare get re-alerted
+    await supabaseAdmin
+      .from("ride_declines")
+      .delete()
+      .eq("ride_id", id);
+
     // Re-trigger matching to notify drivers of the updated fare
     findNearbyDrivers(
       ride.origin_lat,
