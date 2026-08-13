@@ -296,6 +296,55 @@ export async function ridesRoutes(app: FastifyInstance) {
     return reply.send({ success: true, offered_fare: newFare });
   });
 
+  // POST /rides/:id/retry — Re-trigger driver matching (customer only)
+  app.post("/rides/:id/retry", { preHandler: [authGuard, requireRole("customer")] }, async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const customerId = request.user!.id;
+
+    const { data: ride, error } = await supabaseAdmin
+      .from("rides")
+      .select("*")
+      .eq("id", id)
+      .single();
+
+    if (error || !ride) {
+      return reply.status(404).send({ error: "Ride not found" });
+    }
+
+    if (ride.customer_id !== customerId) {
+      return reply.status(403).send({ error: "Not authorized" });
+    }
+
+    if (ride.status !== "requested") {
+      return reply.status(400).send({ error: "Ride is no longer in requested state" });
+    }
+
+    // Log retry event
+    await supabaseAdmin.from("ride_events").insert({
+      ride_id: id,
+      type: "retry",
+      payload: { customer_id: customerId },
+    });
+
+    // Clear previous declines so all drivers get re-alerted
+    await supabaseAdmin
+      .from("ride_declines")
+      .delete()
+      .eq("ride_id", id);
+
+    // Re-trigger matching to notify drivers
+    findNearbyDrivers(
+      ride.origin_lat,
+      ride.origin_lng,
+      ride.vehicle_type,
+      id,
+      ride.service_type,
+      ride.cargo_weight_kg
+    ).catch(() => {});
+
+    return reply.send({ success: true });
+  });
+
   // POST /rides/:id/cancel — Cancel a ride (participant check)
   app.post("/rides/:id/cancel", { preHandler: [authGuard] }, async (request, reply) => {
     const { id } = request.params as { id: string };

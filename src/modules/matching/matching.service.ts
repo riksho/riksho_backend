@@ -50,6 +50,7 @@ export async function findNearbyDrivers(
       rideData?.offered_fare && Number(rideData.offered_fare) > Number(rideData.fare_estimate)
     ),
     distance_km: rideData?.distance_m ? +(rideData.distance_m / 1000).toFixed(1) : undefined,
+    offer_attempt_id: Date.now(),
   };
 
   const radii = [3000, 5000, 8000]; // 3km, 5km, 8km
