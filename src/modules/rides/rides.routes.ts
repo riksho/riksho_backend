@@ -558,6 +558,56 @@ export async function ridesRoutes(app: FastifyInstance) {
     return reply.send({ status: "arriving" });
   });
 
+  // POST /rides/:id/arrival-override — Driver bypassed the 100m arrival geofence
+  //
+  // The partner app disables "I've Arrived" / "Complete Trip" until the driver is
+  // within 100m of the target (see lib/arrival.ts). That gate has to have an escape
+  // hatch: urban multipath, basement parking and mall pickups routinely report a
+  // fix hundreds of metres off while the driver stands at the door, and without a
+  // bypass those trips dead-end for both parties.
+  //
+  // This records the bypass so misuse is measurable rather than invisible. It is
+  // audit-only — it does NOT transition the ride, so a driver gains nothing by
+  // calling it directly; they still have to hit /arrived or /complete, which
+  // enforce their own state guards.
+  app.post("/rides/:id/arrival-override", { preHandler: [authGuard, requireRole("driver")] }, async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const driverId = request.user!.id;
+
+    const OverrideSchema = z.object({
+      reported_distance_m: z.number().nullable().optional(),
+      accuracy_m: z.number().nullable().optional(),
+      phase: z.enum(["pickup", "dropoff"]).nullable().optional(),
+    });
+    const body = OverrideSchema.parse(request.body ?? {});
+
+    // Scope to the assigned driver so one driver cannot write audit rows against
+    // another driver's ride.
+    const { data: ride } = await supabaseAdmin
+      .from("rides")
+      .select("id, driver_id")
+      .eq("id", id)
+      .eq("driver_id", driverId)
+      .single();
+
+    if (!ride) {
+      return reply.status(404).send({ error: "Ride not found" });
+    }
+
+    await supabaseAdmin.from("ride_events").insert({
+      ride_id: id,
+      type: "arrival_override",
+      payload: {
+        driver_id: driverId,
+        reported_distance_m: body.reported_distance_m ?? null,
+        accuracy_m: body.accuracy_m ?? null,
+        phase: body.phase ?? null,
+      },
+    });
+
+    return reply.send({ ok: true });
+  });
+
   // POST /rides/:id/verify-otp — Driver submits OTP to start trip
   app.post("/rides/:id/verify-otp", { preHandler: [authGuard, requireRole("driver")] }, async (request, reply) => {
     const { id } = request.params as { id: string };
