@@ -139,4 +139,20 @@ export async function adminRoutes(app: FastifyInstance) {
     await setStatus(id, false, "suspended", req.user!.id, reason);
     return { ok: true, verification_status: "suspended" };
   });
+
+  app.get("/admin/cancellations", guard, async (req) => {
+    const { data, error } = await supabaseAdmin
+      .from("rides")
+      .select("id, created_at, cancelled_at, cancel_reason, origin_address, dest_address, customer_id, driver_id, vehicle_type, service_type, cancelled_by")
+      .eq("status", "cancelled")
+      .order("cancelled_at", { ascending: false })
+      .limit(100);
+
+    if (error) {
+      logger.error({ error }, "Failed to fetch cancellations");
+      throw error;
+    }
+    
+    return data ?? [];
+  });
 }
