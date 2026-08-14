@@ -423,6 +423,21 @@ export async function ridesRoutes(app: FastifyInstance) {
     return reply.send({ status: "cancelled" });
   });
 
+  // POST /rides/:id/cancel-reason — Update cancellation reason feedback
+  app.post("/rides/:id/cancel-reason", { preHandler: [authGuard] }, async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const { reason } = (request.body as { reason?: string }) ?? {};
+
+    if (reason) {
+      await supabaseAdmin
+        .from("rides")
+        .update({ cancel_reason: reason })
+        .eq("id", id);
+    }
+
+    return reply.send({ success: true });
+  });
+
   // POST /rides/:id/decline — Driver declines the ride
   app.post("/rides/:id/decline", { preHandler: [authGuard, requireRole("driver")] }, async (request, reply) => {
     const { id } = request.params as { id: string };
