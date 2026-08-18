@@ -93,12 +93,21 @@ app.setErrorHandler((error, request, reply) => {
 });
 
 // --- Health check ---
-app.get("/health", async () => ({
-  status: "ok",
-  service: "riksho-backend",
-  version: "1.0.0",
-  timestamp: new Date().toISOString(),
-}));
+app.route({
+  method: ["GET", "HEAD"],
+  url: "/health",
+  handler: async (_request, reply) => {
+    return reply.status(200).send({ status: "ok" });
+  },
+});
+
+app.route({
+  method: ["GET", "HEAD"],
+  url: "/",
+  handler: async (_request, reply) => {
+    return reply.status(200).send("OK");
+  },
+});
 
 // --- Register route modules ---
 await app.register(authRoutes);
