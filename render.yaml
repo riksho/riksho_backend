@@ -1,0 +1,24 @@
+services:
+  - type: web
+    name: riksho-backend
+    runtime: node
+    plan: free
+    region: singapore
+    buildCommand: npm install && npm run build
+    startCommand: npm start
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_ANON_KEY
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: SB_PUBLISHABLE_KEY
+        sync: false
+      - key: SB_SECRET_KEY
+        sync: false
+      - key: CORS_ORIGINS
+        value: "*"
