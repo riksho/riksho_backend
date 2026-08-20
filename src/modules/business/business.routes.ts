@@ -184,11 +184,23 @@ export default async function businessRoutes(app: FastifyInstance) {
   app.get("/business/portal/me", portalGuard, async (request, reply) => {
     const userId = request.user!.id;
     const business = await getBusinessForUser(userId);
+    const isAdmin = request.user!.role === "admin";
+
+    if (!business && !isAdmin) {
+      return reply.send({
+        id: userId,
+        email: request.user!.email,
+        phone: request.user!.phone,
+        role: "unregistered",
+        business: null,
+      });
+    }
 
     return reply.send({
       id: userId,
       email: request.user!.email,
-      role: "business_owner",
+      phone: request.user!.phone,
+      role: isAdmin ? "admin" : "business_owner",
       business: business || null,
     });
   });
