@@ -72,26 +72,37 @@ export default async function businessRoutes(app: FastifyInstance) {
       try {
         const token = await getSandboxAccessToken(sandboxApiKey, sandboxSecret, process.env.SANDBOX_API_VERSION || "1.0.0");
         if (token) {
-          const res = await fetch(`https://api.sandbox.co.in/gsp/public/gstin/${cleanGstin}`, {
+          const res = await fetch("https://api.sandbox.co.in/gst/compliance/public/gstin/search", {
+            method: "POST",
             headers: {
               "x-api-key": sandboxApiKey,
               "authorization": token,
               "x-api-version": "1.0",
+              "Content-Type": "application/json",
             },
+            body: JSON.stringify({ gstin: cleanGstin }),
           });
           const data: any = await res.json();
-          if (data?.data) {
-            const gstData = data.data;
+          const gstData = data?.data?.data || data?.data;
+
+          if (gstData && (gstData.lgnm || gstData.legal_name || gstData.tradeNam || gstData.trade_name || gstData.gstin)) {
             const pan = cleanGstin.slice(2, 12);
+            const addr = gstData.pradr?.addr || {};
             const addressParts = [
-              gstData.pradr?.addr?.bno,
-              gstData.pradr?.addr?.bnm,
-              gstData.pradr?.addr?.st,
-              gstData.pradr?.addr?.loc,
+              addr.bno,
+              addr.bnm,
+              addr.st,
+              addr.locality,
+              addr.loc,
             ].filter(Boolean);
 
-            const tradeName = gstData.trade_name || gstData.tradeNam || gstData.tradeName || gstData.legal_name || gstData.lgnm || gstData.legalName || "";
-            const legalName = gstData.legal_name || gstData.lgnm || gstData.legalName || gstData.trade_name || gstData.tradeNam || "";
+            const legalName = gstData.lgnm || gstData.legal_name || gstData.legalName || "";
+            const tradeName = gstData.tradeNam || gstData.trade_name || gstData.tradeName || legalName;
+
+            const city = addr.loc || addr.dst || addr.city || "";
+            const state = addr.stcd || "";
+            const pincode = addr.pncd || "";
+            const fullAddress = addressParts.join(", ") + (pincode ? ` - ${pincode}` : "");
 
             return reply.send({
               valid: true,
@@ -99,13 +110,13 @@ export default async function businessRoutes(app: FastifyInstance) {
               gstin: cleanGstin,
               tradeName: tradeName || legalName,
               legalName: legalName || tradeName,
-              gstStatus: gstData.status || "ACTIVE",
-              taxpayerType: gstData.taxpayer_type || "Regular",
+              gstStatus: gstData.sts || gstData.status || "ACTIVE",
+              taxpayerType: gstData.dty || gstData.ctb || gstData.taxpayer_type || "Regular",
               pan,
-              address: addressParts.join(", ") || "",
-              city: gstData.pradr?.addr?.dst || gstData.pradr?.addr?.city || "",
-              state: gstData.pradr?.addr?.stcd || "",
-              pincode: gstData.pradr?.addr?.pncd || "",
+              address: fullAddress || "",
+              city: city,
+              state: state,
+              pincode: pincode,
             });
           }
         }
