@@ -90,12 +90,15 @@ export default async function businessRoutes(app: FastifyInstance) {
               gstData.pradr?.addr?.loc,
             ].filter(Boolean);
 
+            const tradeName = gstData.trade_name || gstData.tradeNam || gstData.tradeName || gstData.legal_name || gstData.lgnm || gstData.legalName || "";
+            const legalName = gstData.legal_name || gstData.lgnm || gstData.legalName || gstData.trade_name || gstData.tradeNam || "";
+
             return reply.send({
               valid: true,
               live: true,
               gstin: cleanGstin,
-              tradeName: gstData.trade_name || gstData.legal_name || "",
-              legalName: gstData.legal_name || gstData.trade_name || "",
+              tradeName: tradeName || legalName,
+              legalName: legalName || tradeName,
               gstStatus: gstData.status || "ACTIVE",
               taxpayerType: gstData.taxpayer_type || "Regular",
               pan,
@@ -132,6 +135,19 @@ export default async function businessRoutes(app: FastifyInstance) {
     }
 
     const pan = cleanGstin.slice(2, 12);
+    const entityTypeChar = pan[3]; // 4th char in PAN indicates entity type
+    const ENTITY_TYPE_NAMES: Record<string, string> = {
+      C: "Logistics Technologies Pvt. Ltd.",
+      P: "Enterprises & Traders",
+      F: "Logistics LLP",
+      H: "HUF Transport Solutions",
+      A: "Associates",
+      T: "Trust",
+    };
+
+    const prefix = cleanGstin.slice(2, 5); // 3 letters
+    const mockLegalName = `${prefix} ${ENTITY_TYPE_NAMES[entityTypeChar] || "Enterprises Pvt. Ltd."}`;
+
     const stateCapitalMap: Record<string, string> = {
       "Maharashtra": "Mumbai",
       "Delhi": "New Delhi",
@@ -150,8 +166,8 @@ export default async function businessRoutes(app: FastifyInstance) {
       valid: true,
       live: false,
       gstin: cleanGstin,
-      tradeName: "",
-      legalName: "",
+      tradeName: mockLegalName,
+      legalName: mockLegalName,
       gstStatus: "ACTIVE",
       taxpayerType: "Regular",
       pan,
