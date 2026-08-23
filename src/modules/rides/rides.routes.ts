@@ -215,6 +215,7 @@ export async function ridesRoutes(app: FastifyInstance) {
     let query = supabaseAdmin
       .from("rides")
       .select("*")
+      .eq("status", "completed")
       .order("created_at", { ascending: false })
       .limit(50);
 
