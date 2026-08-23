@@ -225,13 +225,78 @@ export async function ridesRoutes(app: FastifyInstance) {
       query = query.eq("customer_id", userId);
     }
 
-    const { data, error } = await query;
+    const { data: ridesList, error } = await query;
 
     if (error) {
       return reply.status(500).send({ error: "Failed to fetch rides" });
     }
 
-    return reply.send(data || []);
+    if (!ridesList || ridesList.length === 0) {
+      return reply.send([]);
+    }
+
+    // Populate driver/vehicle details for customer history
+    const driverIds = [...new Set(ridesList.map((r: any) => r.driver_id).filter(Boolean))];
+    const driverMap = new Map<string, any>();
+
+    if (driverIds.length > 0) {
+      const { data: drivers } = await supabaseAdmin
+        .from("drivers")
+        .select("id, name, phone, rating, vehicles!vehicles_driver_id_fkey(type, plate, model, seats)")
+        .in("id", driverIds);
+
+      if (drivers) {
+        drivers.forEach((d: any) => {
+          const v = Array.isArray(d.vehicles) ? d.vehicles[0] : d.vehicles;
+          const nameParts = (d.name || "Driver").trim().split(" ");
+          driverMap.set(d.id, {
+            name: d.name || "Driver",
+            first_name: nameParts[0] || "Driver",
+            last_name: nameParts.slice(1).join(" ") || "",
+            phone: d.phone,
+            rating: d.rating,
+            car_seats: v?.seats || 3,
+            vehicle_type: v?.type || "auto",
+            vehicle_plate: v?.plate || "MH 01 AB 1234",
+            vehicle_model: v?.model || "Standard Auto",
+          });
+        });
+      }
+    }
+
+    const formatted = ridesList.map((r: any) => {
+      const driver = driverMap.get(r.driver_id) || {
+        first_name: "Driver",
+        last_name: "",
+        car_seats: 3,
+        vehicle_model: "Auto",
+        vehicle_plate: "",
+        name: "Driver",
+      };
+
+      return {
+        ...r,
+        destination_latitude: r.dest_lat ?? r.destination_latitude ?? 22.5726,
+        destination_longitude: r.dest_lng ?? r.destination_longitude ?? 88.3639,
+        origin_latitude: r.origin_lat ?? r.origin_latitude ?? 22.5726,
+        origin_longitude: r.origin_lng ?? r.origin_longitude ?? 88.3639,
+        destination_address: r.dest_address ?? r.destination_address ?? "Destination",
+        origin_address: r.origin_address ?? "Pickup Location",
+        driver: {
+          first_name: driver.first_name,
+          last_name: driver.last_name,
+          car_seats: driver.car_seats,
+          phone: driver.phone,
+        },
+        driver_name: driver.name,
+        vehicle_model: driver.vehicle_model,
+        vehicle_plate: driver.vehicle_plate,
+        payment_status: r.payment_status || "paid",
+        ride_time: r.ride_time || 15,
+      };
+    });
+
+    return reply.send(formatted);
   });
 
   // POST /rides/:id/fare — Update offered fare and re-trigger matching
