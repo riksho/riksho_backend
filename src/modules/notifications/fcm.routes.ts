@@ -9,7 +9,7 @@ import { z } from "zod";
 const SendPushSchema = z.object({
   title: z.string().min(1).max(100),
   body: z.string().min(1).max(500),
-  imageUrl: z.string().url().optional(),
+  imageUrl: z.string().url().optional().nullable().or(z.literal("")),
   target: z.enum(["all_users", "riders", "drivers"]).default("all_users"),
 });
 
@@ -26,15 +26,16 @@ export async function fcmRoutes(app: FastifyInstance) {
    */
   app.post("/admin/push/send", adminGuard, async (request, reply) => {
     const { title, body, imageUrl, target } = SendPushSchema.parse(request.body);
+    const cleanImageUrl = imageUrl && imageUrl.trim().length > 0 ? imageUrl.trim() : undefined;
 
     try {
       let messageId: string | null = null;
 
       // 1. Topic Broadcast
       if (target === "all_users") {
-        messageId = await sendToAllUsers({ title, body, imageUrl });
+        messageId = await sendToAllUsers({ title, body, imageUrl: cleanImageUrl });
       } else {
-        messageId = await sendToTopic(target, { title, body, imageUrl });
+        messageId = await sendToTopic(target, { title, body, imageUrl: cleanImageUrl });
       }
 
       // 2. Direct Device Multicast (Guarantees instant delivery even if topic propagation is pending)
@@ -43,7 +44,7 @@ export async function fcmRoutes(app: FastifyInstance) {
           const { data: tokenRows } = await supabaseAdmin.from("push_tokens").select("token");
           const tokens = Array.from(new Set((tokenRows || []).map((r) => r.token).filter(Boolean)));
           if (tokens.length > 0) {
-            await sendToTokens(tokens, { title, body, imageUrl });
+            await sendToTokens(tokens, { title, body, imageUrl: cleanImageUrl });
           }
         } else if (target === "drivers") {
           const { data: driverRows } = await supabaseAdmin.from("drivers").select("id");
@@ -55,7 +56,7 @@ export async function fcmRoutes(app: FastifyInstance) {
               .in("user_id", driverUserIds);
             const tokens = Array.from(new Set((tokenRows || []).map((r) => r.token).filter(Boolean)));
             if (tokens.length > 0) {
-              await sendToTokens(tokens, { title, body, imageUrl });
+              await sendToTokens(tokens, { title, body, imageUrl: cleanImageUrl });
             }
           }
         } else if (target === "riders") {
@@ -71,7 +72,7 @@ export async function fcmRoutes(app: FastifyInstance) {
             )
           );
           if (tokens.length > 0) {
-            await sendToTokens(tokens, { title, body, imageUrl });
+            await sendToTokens(tokens, { title, body, imageUrl: cleanImageUrl });
           }
         }
       } catch (multicastErr: any) {
@@ -79,7 +80,7 @@ export async function fcmRoutes(app: FastifyInstance) {
       }
 
       // Save to history
-      await savePushHistory(title, body, target, request.user!.id, messageId, imageUrl);
+      await savePushHistory(title, body, target, request.user!.id, messageId, cleanImageUrl);
 
       return reply.send({
         success: true,
