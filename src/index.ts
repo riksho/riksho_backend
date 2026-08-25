@@ -24,6 +24,7 @@ import { darkstoreRoutes } from "./modules/darkstore/darkstore.routes.js";
 import { ordersRoutes } from "./modules/orders/orders.routes.js";
 import { settlementRoutes } from "./modules/settlement/settlement.routes.js";
 import { fcmRoutes } from "./modules/notifications/fcm.routes.js";
+import { promotersRoutes } from "./modules/promoters/promoters.routes.js";
 
 // Firebase init (side-effect: initialises firebase-admin)
 import "./config/firebase.js";
@@ -140,6 +141,7 @@ await app.register(darkstoreRoutes);
 await app.register(ordersRoutes);
 await app.register(settlementRoutes);
 await app.register(fcmRoutes);
+await app.register(promotersRoutes);
 
 // --- Start Background Services ---
 startScheduler();
