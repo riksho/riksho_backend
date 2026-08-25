@@ -221,14 +221,23 @@ export async function promotersRoutes(app: FastifyInstance) {
 
   /**
    * POST /promoters/link-driver — Scan and link a driver recruit (+₹20 reward)
+   * Supports [TEST] mode for testing and scans outside the fresh 2-hour auto-bomb window.
    */
   app.post("/promoters/link-driver", { preHandler: [authGuard] }, async (request, reply) => {
     const userId = request.user!.id;
     const { driver_id: rawDriverId } = LinkDriverSchema.parse(request.body);
 
-    // Parse potential QR code prefixes like "riksho-driver:<uuid>" or URL parameters
+    // Parse potential QR code prefixes like "riksho-driver:test:<uuid>", "riksho-driver:<uuid>" or URL parameters
+    let isTest = false;
     let cleanDriverId = rawDriverId.trim();
-    if (cleanDriverId.startsWith("riksho-driver:")) {
+
+    if (cleanDriverId.startsWith("riksho-driver:test:")) {
+      isTest = true;
+      cleanDriverId = cleanDriverId.replace("riksho-driver:test:", "").trim();
+    } else if (cleanDriverId.startsWith("test:")) {
+      isTest = true;
+      cleanDriverId = cleanDriverId.replace("test:", "").trim();
+    } else if (cleanDriverId.startsWith("riksho-driver:")) {
       cleanDriverId = cleanDriverId.replace("riksho-driver:", "").trim();
     } else if (cleanDriverId.includes("driver_id=")) {
       const match = cleanDriverId.match(/driver_id=([a-f0-9-]+)/i);
@@ -252,7 +261,7 @@ export async function promotersRoutes(app: FastifyInstance) {
     // 2. Fetch driver profile from drivers and users table
     const { data: driver, error: driverErr } = await supabaseAdmin
       .from("drivers")
-      .select("id, verification_status")
+      .select("id, created_at, verification_status")
       .eq("id", cleanDriverId)
       .single();
 
@@ -263,13 +272,26 @@ export async function promotersRoutes(app: FastifyInstance) {
       });
     }
 
+    // Check 2-hour auto-bomb window (if driver was registered >= 2 hours ago, mark as [TEST])
+    if (driver.created_at) {
+      const driverCreatedTime = new Date(driver.created_at).getTime();
+      const elapsedMs = Date.now() - driverCreatedTime;
+      const TWO_HOURS_MS = 2 * 60 * 60 * 1000;
+      if (elapsedMs >= TWO_HOURS_MS) {
+        isTest = true;
+      }
+    }
+
     const { data: driverUser } = await supabaseAdmin
       .from("users")
       .select("name, phone")
       .eq("id", cleanDriverId)
       .single();
 
-    const driverName = driverUser?.name || "Riksho Partner";
+    const rawDriverName = driverUser?.name || "Riksho Partner";
+    const driverName = isTest && !rawDriverName.startsWith("[TEST]")
+      ? `[TEST] ${rawDriverName}`
+      : rawDriverName;
     const driverPhone = driverUser?.phone || "Registered Driver";
 
     // 3. Check if driver has already been linked to any promoter
@@ -324,7 +346,10 @@ export async function promotersRoutes(app: FastifyInstance) {
 
     return reply.status(201).send({
       success: true,
-      message: `Driver ${driverName} successfully verified! ₹20 added to your balance.`,
+      is_test: isTest,
+      message: isTest
+        ? `Driver ${driverName} verified in Testing Mode! ₹20 added to balance.`
+        : `Driver ${driverName} successfully verified! ₹20 added to your balance.`,
       referral,
       new_balance: newAvailableBalance,
     });
