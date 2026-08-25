@@ -33,6 +33,21 @@ const app = Fastify({
   bodyLimit: 1_048_576, // 1 MB — prevents payload abuse
 });
 
+// Safe JSON parser: handles empty bodies gracefully without throwing FST_ERR_CTP_EMPTY_JSON_BODY
+app.addContentTypeParser("application/json", { parseAs: "string" }, (_req, body, done) => {
+  try {
+    if (!body || (typeof body === "string" && body.trim() === "")) {
+      done(null, {});
+      return;
+    }
+    const json = JSON.parse(body as string);
+    done(null, json);
+  } catch (err: any) {
+    err.statusCode = 400;
+    done(err, undefined);
+  }
+});
+
 // --- Plugins ---
 
 // CORS: lock down in production, allow all in dev
