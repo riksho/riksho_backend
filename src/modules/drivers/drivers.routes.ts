@@ -6,9 +6,27 @@ import { DriverLocationSchema, DriverRegisterSchema, DriverDocumentSchema } from
 import { withSignedUrls } from "../../common/document-urls.js";
 
 export async function driversRoutes(app: FastifyInstance) {
-  // POST /drivers/online — Go online (drivers only)
+  // POST /drivers/online — Go online (drivers only, subscription gated)
   app.post("/drivers/online", { preHandler: [authGuard, requireRole("driver")] }, async (request, reply) => {
     const driverId = request.user!.id;
+
+    // Check active driver subscription
+    const { data: activeSub } = await supabaseAdmin
+      .from("driver_subscriptions")
+      .select("id, expires_at, status, plan_name")
+      .eq("driver_id", driverId)
+      .eq("status", "active")
+      .gt("expires_at", new Date().toISOString())
+      .order("expires_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (!activeSub) {
+      return reply.status(402).send({
+        error: "SUBSCRIPTION_REQUIRED",
+        message: "Active recharge plan required to go online. Please recharge your subscription to receive ride requests.",
+      });
+    }
 
     const { error } = await supabaseAdmin
       .from("drivers")
@@ -19,7 +37,7 @@ export async function driversRoutes(app: FastifyInstance) {
       return reply.status(500).send({ error: "Failed to go online" });
     }
 
-    return reply.send({ status: "online" });
+    return reply.send({ status: "online", subscription: activeSub });
   });
 
   // POST /drivers/offline — Go offline (drivers only)

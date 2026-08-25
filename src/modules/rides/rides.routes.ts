@@ -884,17 +884,29 @@ export async function ridesRoutes(app: FastifyInstance) {
       return reply.status(500).send({ error: "Failed to complete ride" });
     }
 
-    // Set driver back to online + increment total_trips (read-update)
+    // Set driver back to online if subscription still active, else offline + increment total_trips
     const { data: driverData } = await supabaseAdmin
       .from("drivers")
       .select("total_trips")
       .eq("id", driverId)
       .single();
 
+    // Check if driver subscription expired while on this trip
+    const { data: activeSub } = await supabaseAdmin
+      .from("driver_subscriptions")
+      .select("id, expires_at")
+      .eq("driver_id", driverId)
+      .eq("status", "active")
+      .gt("expires_at", new Date().toISOString())
+      .limit(1)
+      .maybeSingle();
+
+    const finalDriverStatus = activeSub ? "online" : "offline";
+
     await supabaseAdmin
       .from("drivers")
       .update({
-        status: "online",
+        status: finalDriverStatus,
         total_trips: (driverData?.total_trips || 0) + 1,
       })
       .eq("id", driverId);
