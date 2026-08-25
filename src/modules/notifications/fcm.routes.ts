@@ -2,7 +2,7 @@ import type { FastifyInstance } from "fastify";
 import { authGuard } from "../../common/auth.guard.js";
 import { requireRole } from "../../common/roles.guard.js";
 import { supabaseAdmin } from "../../config/supabase.js";
-import { sendToAllUsers, sendToTopic, sendToTokens, savePushHistory } from "./fcm.service.js";
+import { sendToAllUsers, sendToTopic, sendToTokens, pruneInvalidTokens, savePushHistory } from "./fcm.service.js";
 import { logger } from "../../common/logger.js";
 import { z } from "zod";
 
@@ -22,61 +22,61 @@ export async function fcmRoutes(app: FastifyInstance) {
   const adminGuard = { preHandler: [authGuard, requireRole("admin")] };
 
   /**
-   * POST /admin/push/send — Admin broadcasts a push notification
+   * POST /admin/push/send — Admin broadcasts a push notification (deduplicated)
    */
   app.post("/admin/push/send", adminGuard, async (request, reply) => {
     const { title, body, imageUrl, target } = SendPushSchema.parse(request.body);
     const cleanImageUrl = imageUrl && imageUrl.trim().length > 0 ? imageUrl.trim() : undefined;
 
     try {
-      let messageId: string | null = null;
+      let tokens: string[] = [];
 
-      // 1. Topic Broadcast
       if (target === "all_users") {
-        messageId = await sendToAllUsers({ title, body, imageUrl: cleanImageUrl });
-      } else {
-        messageId = await sendToTopic(target, { title, body, imageUrl: cleanImageUrl });
+        const { data: tokenRows } = await supabaseAdmin.from("push_tokens").select("token");
+        tokens = Array.from(new Set((tokenRows || []).map((r) => r.token).filter(Boolean)));
+      } else if (target === "drivers") {
+        const { data: driverRows } = await supabaseAdmin.from("drivers").select("id");
+        const driverUserIds = (driverRows || []).map((d) => d.id);
+        if (driverUserIds.length > 0) {
+          const { data: tokenRows } = await supabaseAdmin
+            .from("push_tokens")
+            .select("token")
+            .in("user_id", driverUserIds);
+          tokens = Array.from(new Set((tokenRows || []).map((r) => r.token).filter(Boolean)));
+        }
+      } else if (target === "riders") {
+        const { data: driverRows } = await supabaseAdmin.from("drivers").select("id");
+        const driverUserIds = new Set((driverRows || []).map((d) => d.id));
+        const { data: tokenRows } = await supabaseAdmin.from("push_tokens").select("user_id, token");
+        tokens = Array.from(
+          new Set(
+            (tokenRows || [])
+              .filter((r) => !driverUserIds.has(r.user_id))
+              .map((r) => r.token)
+              .filter(Boolean)
+          )
+        );
       }
 
-      // 2. Direct Device Multicast (Guarantees instant delivery even if topic propagation is pending)
-      try {
-        if (target === "all_users") {
-          const { data: tokenRows } = await supabaseAdmin.from("push_tokens").select("token");
-          const tokens = Array.from(new Set((tokenRows || []).map((r) => r.token).filter(Boolean)));
-          if (tokens.length > 0) {
-            await sendToTokens(tokens, { title, body, imageUrl: cleanImageUrl });
-          }
-        } else if (target === "drivers") {
-          const { data: driverRows } = await supabaseAdmin.from("drivers").select("id");
-          const driverUserIds = (driverRows || []).map((d) => d.id);
-          if (driverUserIds.length > 0) {
-            const { data: tokenRows } = await supabaseAdmin
-              .from("push_tokens")
-              .select("token")
-              .in("user_id", driverUserIds);
-            const tokens = Array.from(new Set((tokenRows || []).map((r) => r.token).filter(Boolean)));
-            if (tokens.length > 0) {
-              await sendToTokens(tokens, { title, body, imageUrl: cleanImageUrl });
-            }
-          }
-        } else if (target === "riders") {
-          const { data: driverRows } = await supabaseAdmin.from("drivers").select("id");
-          const driverUserIds = new Set((driverRows || []).map((d) => d.id));
-          const { data: tokenRows } = await supabaseAdmin.from("push_tokens").select("user_id, token");
-          const tokens = Array.from(
-            new Set(
-              (tokenRows || [])
-                .filter((r) => !driverUserIds.has(r.user_id))
-                .map((r) => r.token)
-                .filter(Boolean)
-            )
-          );
-          if (tokens.length > 0) {
-            await sendToTokens(tokens, { title, body, imageUrl: cleanImageUrl });
+      let messageId: string | null = null;
+
+      // Direct Multicast to active device tokens (zero duplicate guarantee)
+      if (tokens.length > 0) {
+        for (let i = 0; i < tokens.length; i += 500) {
+          const chunk = tokens.slice(i, i + 500);
+          const result = await sendToTokens(chunk, { title, body, imageUrl: cleanImageUrl });
+          if (result.invalidTokens && result.invalidTokens.length > 0) {
+            await pruneInvalidTokens(result.invalidTokens);
           }
         }
-      } catch (multicastErr: any) {
-        logger.warn({ err: multicastErr.message }, "Direct multicast broadcast warning");
+        messageId = `multicast-${tokens.length}-devices`;
+      } else {
+        // Fallback to topic broadcast if no database tokens exist yet
+        if (target === "all_users") {
+          messageId = await sendToAllUsers({ title, body, imageUrl: cleanImageUrl });
+        } else {
+          messageId = await sendToTopic(target, { title, body, imageUrl: cleanImageUrl });
+        }
       }
 
       // Save to history
@@ -85,7 +85,7 @@ export async function fcmRoutes(app: FastifyInstance) {
       return reply.send({
         success: true,
         messageId,
-        message: `Notification sent to ${target}`,
+        message: `Notification sent to ${target} (${tokens.length > 0 ? tokens.length + ' devices' : 'via topic'})`,
       });
     } catch (err: any) {
       logger.error({ err: err.message }, "Admin push send failed");
