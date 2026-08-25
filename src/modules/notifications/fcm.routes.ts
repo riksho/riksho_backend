@@ -32,35 +32,55 @@ export async function fcmRoutes(app: FastifyInstance) {
       let tokens: string[] = [];
 
       if (target === "all_users") {
-        const { data: tokenRows } = await supabaseAdmin.from("push_tokens").select("token");
-        tokens = Array.from(new Set((tokenRows || []).map((r) => r.token).filter(Boolean)));
+        const { data: tokenRows } = await supabaseAdmin
+          .from("push_tokens")
+          .select("user_id, token, updated_at")
+          .order("updated_at", { ascending: false });
+
+        const userTokenMap = new Map<string, string>();
+        (tokenRows || []).forEach((row) => {
+          if (row.user_id && row.token && !userTokenMap.has(row.user_id)) {
+            userTokenMap.set(row.user_id, row.token);
+          }
+        });
+        tokens = Array.from(userTokenMap.values());
       } else if (target === "drivers") {
         const { data: driverRows } = await supabaseAdmin.from("drivers").select("id");
-        const driverUserIds = (driverRows || []).map((d) => d.id);
-        if (driverUserIds.length > 0) {
+        const driverUserIds = new Set((driverRows || []).map((d) => d.id));
+        if (driverUserIds.size > 0) {
           const { data: tokenRows } = await supabaseAdmin
             .from("push_tokens")
-            .select("token")
-            .in("user_id", driverUserIds);
-          tokens = Array.from(new Set((tokenRows || []).map((r) => r.token).filter(Boolean)));
+            .select("user_id, token, updated_at")
+            .order("updated_at", { ascending: false });
+
+          const userTokenMap = new Map<string, string>();
+          (tokenRows || []).forEach((row) => {
+            if (row.user_id && driverUserIds.has(row.user_id) && row.token && !userTokenMap.has(row.user_id)) {
+              userTokenMap.set(row.user_id, row.token);
+            }
+          });
+          tokens = Array.from(userTokenMap.values());
         }
       } else if (target === "riders") {
         const { data: driverRows } = await supabaseAdmin.from("drivers").select("id");
         const driverUserIds = new Set((driverRows || []).map((d) => d.id));
-        const { data: tokenRows } = await supabaseAdmin.from("push_tokens").select("user_id, token");
-        tokens = Array.from(
-          new Set(
-            (tokenRows || [])
-              .filter((r) => !driverUserIds.has(r.user_id))
-              .map((r) => r.token)
-              .filter(Boolean)
-          )
-        );
+        const { data: tokenRows } = await supabaseAdmin
+          .from("push_tokens")
+          .select("user_id, token, updated_at")
+          .order("updated_at", { ascending: false });
+
+        const userTokenMap = new Map<string, string>();
+        (tokenRows || []).forEach((row) => {
+          if (row.user_id && !driverUserIds.has(row.user_id) && row.token && !userTokenMap.has(row.user_id)) {
+            userTokenMap.set(row.user_id, row.token);
+          }
+        });
+        tokens = Array.from(userTokenMap.values());
       }
 
       let messageId: string | null = null;
 
-      // Direct Multicast to active device tokens (zero duplicate guarantee)
+      // Direct Multicast to active device tokens (strictly 1 notification per unique user)
       if (tokens.length > 0) {
         for (let i = 0; i < tokens.length; i += 500) {
           const chunk = tokens.slice(i, i + 500);
@@ -85,7 +105,7 @@ export async function fcmRoutes(app: FastifyInstance) {
       return reply.send({
         success: true,
         messageId,
-        message: `Notification sent to ${target} (${tokens.length > 0 ? tokens.length + ' devices' : 'via topic'})`,
+        message: `Notification sent to ${target} (${tokens.length > 0 ? tokens.length + ' unique users' : 'via topic'})`,
       });
     } catch (err: any) {
       logger.error({ err: err.message }, "Admin push send failed");
@@ -124,9 +144,7 @@ export async function fcmRoutes(app: FastifyInstance) {
     const userId = request.user!.id;
     const { token, platform } = FcmRegisterSchema.parse(request.body);
 
-    // onConflict targets the composite primary key (user_id, token) introduced by
-    // migration 019. This lets one user register several devices (phone + tablet)
-    // while re-registering the same device stays a cheap no-op update.
+    // Upsert latest token for this user
     const { error } = await supabaseAdmin
       .from("push_tokens")
       .upsert(
@@ -145,9 +163,14 @@ export async function fcmRoutes(app: FastifyInstance) {
       return reply.status(500).send({ error: "Failed to register token", details: error.message, hint: error.hint });
     }
 
-    // A device token identifies a *device*, not an account. If a driver logs out and
-    // another account logs in on the same phone, the stale row would keep receiving
-    // the previous user's ride offers on that device. Drop any other user's claim.
+    // Clean up older stale tokens for this user to guarantee strictly 1 token per user
+    await supabaseAdmin
+      .from("push_tokens")
+      .delete()
+      .eq("user_id", userId)
+      .neq("token", token);
+
+    // Drop any other user's claim on this exact device token
     const { error: cleanupError } = await supabaseAdmin
       .from("push_tokens")
       .delete()
