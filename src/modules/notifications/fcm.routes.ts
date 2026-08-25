@@ -117,23 +117,50 @@ export async function fcmRoutes(app: FastifyInstance) {
   });
 
   /**
-   * GET /admin/push/history — Get recently sent notifications
+   * GET /admin/push/history — Get recently sent notifications (Paginated, 8 per page default)
    */
   app.get("/admin/push/history", adminGuard, async (request, reply) => {
-    const { page = "0" } = request.query as any;
-    const pageNum = Number(page);
+    const { page = "0", limit = "8" } = request.query as any;
+    const pageNum = Math.max(0, parseInt(page, 10) || 0);
+    const limitNum = Math.max(1, parseInt(limit, 10) || 8);
 
-    const { data, error } = await supabaseAdmin
+    const from = pageNum * limitNum;
+    const to = from + limitNum - 1;
+
+    const { data, count, error } = await supabaseAdmin
       .from("push_history")
-      .select("*")
+      .select("*", { count: "exact" })
       .order("sent_at", { ascending: false })
-      .range(pageNum * 20, pageNum * 20 + 19);
+      .range(from, to);
 
     if (error) {
       return reply.status(500).send({ error: "Failed to fetch push history" });
     }
 
-    return data ?? [];
+    return {
+      items: data ?? [],
+      total: count ?? 0,
+      page: pageNum,
+      limit: limitNum,
+      totalPages: Math.ceil((count ?? 0) / limitNum),
+    };
+  });
+
+  /**
+   * DELETE /admin/push/history — Clear all notification history
+   */
+  app.delete("/admin/push/history", adminGuard, async (request, reply) => {
+    const { error } = await supabaseAdmin
+      .from("push_history")
+      .delete()
+      .neq("id", "00000000-0000-0000-0000-000000000000");
+
+    if (error) {
+      logger.error({ error }, "Failed to clear push history");
+      return reply.status(500).send({ error: "Failed to clear push history" });
+    }
+
+    return reply.send({ success: true, message: "Broadcast history cleared successfully" });
   });
 
   /**
