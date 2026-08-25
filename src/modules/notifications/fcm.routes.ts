@@ -37,13 +37,7 @@ export async function fcmRoutes(app: FastifyInstance) {
           .select("user_id, token, updated_at")
           .order("updated_at", { ascending: false });
 
-        const userTokenMap = new Map<string, string>();
-        (tokenRows || []).forEach((row) => {
-          if (row.user_id && row.token && !userTokenMap.has(row.user_id)) {
-            userTokenMap.set(row.user_id, row.token);
-          }
-        });
-        tokens = Array.from(userTokenMap.values());
+        tokens = Array.from(new Set((tokenRows || []).map((r) => r.token).filter(Boolean)));
       } else if (target === "drivers") {
         const { data: driverRows } = await supabaseAdmin.from("drivers").select("id");
         const driverUserIds = new Set((driverRows || []).map((d) => d.id));
@@ -53,13 +47,11 @@ export async function fcmRoutes(app: FastifyInstance) {
             .select("user_id, token, updated_at")
             .order("updated_at", { ascending: false });
 
-          const userTokenMap = new Map<string, string>();
-          (tokenRows || []).forEach((row) => {
-            if (row.user_id && driverUserIds.has(row.user_id) && row.token && !userTokenMap.has(row.user_id)) {
-              userTokenMap.set(row.user_id, row.token);
-            }
-          });
-          tokens = Array.from(userTokenMap.values());
+          tokens = Array.from(new Set(
+            (tokenRows || [])
+              .filter((r) => r.user_id && driverUserIds.has(r.user_id) && r.token)
+              .map((r) => r.token)
+          ));
         }
       } else if (target === "riders") {
         const { data: driverRows } = await supabaseAdmin.from("drivers").select("id");
@@ -69,18 +61,16 @@ export async function fcmRoutes(app: FastifyInstance) {
           .select("user_id, token, updated_at")
           .order("updated_at", { ascending: false });
 
-        const userTokenMap = new Map<string, string>();
-        (tokenRows || []).forEach((row) => {
-          if (row.user_id && !driverUserIds.has(row.user_id) && row.token && !userTokenMap.has(row.user_id)) {
-            userTokenMap.set(row.user_id, row.token);
-          }
-        });
-        tokens = Array.from(userTokenMap.values());
+        tokens = Array.from(new Set(
+          (tokenRows || [])
+            .filter((r) => r.user_id && !driverUserIds.has(r.user_id) && r.token)
+            .map((r) => r.token)
+        ));
       }
 
       let messageId: string | null = null;
 
-      // Direct Multicast to active device tokens (strictly 1 notification per unique user)
+      // Direct Multicast to active device tokens (strictly 1 notification per unique device token)
       if (tokens.length > 0) {
         for (let i = 0; i < tokens.length; i += 500) {
           const chunk = tokens.slice(i, i + 500);
@@ -105,7 +95,7 @@ export async function fcmRoutes(app: FastifyInstance) {
       return reply.send({
         success: true,
         messageId,
-        message: `Notification sent to ${target} (${tokens.length > 0 ? tokens.length + ' unique users' : 'via topic'})`,
+        message: `Notification sent to ${target} (${tokens.length > 0 ? tokens.length + ' devices' : 'via topic'})`,
       });
     } catch (err: any) {
       logger.error({ err: err.message }, "Admin push send failed");
@@ -171,7 +161,7 @@ export async function fcmRoutes(app: FastifyInstance) {
     const userId = request.user!.id;
     const { token, platform } = FcmRegisterSchema.parse(request.body);
 
-    // Upsert latest token for this user
+    // Upsert latest token for this user and device
     const { error } = await supabaseAdmin
       .from("push_tokens")
       .upsert(
@@ -190,14 +180,7 @@ export async function fcmRoutes(app: FastifyInstance) {
       return reply.status(500).send({ error: "Failed to register token", details: error.message, hint: error.hint });
     }
 
-    // Clean up older stale tokens for this user to guarantee strictly 1 token per user
-    await supabaseAdmin
-      .from("push_tokens")
-      .delete()
-      .eq("user_id", userId)
-      .neq("token", token);
-
-    // Drop any other user's claim on this exact device token
+    // Drop any other user's claim on this exact device token (e.g. device transferred/reassigned)
     const { error: cleanupError } = await supabaseAdmin
       .from("push_tokens")
       .delete()
