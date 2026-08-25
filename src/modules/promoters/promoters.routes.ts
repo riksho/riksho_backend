@@ -227,21 +227,36 @@ export async function promotersRoutes(app: FastifyInstance) {
     const userId = request.user!.id;
     const { driver_id: rawDriverId } = LinkDriverSchema.parse(request.body);
 
-    // Parse potential QR code prefixes like "riksho-driver:test:<uuid>", "riksho-driver:<uuid>" or URL parameters
     let isTest = false;
     let cleanDriverId = rawDriverId.trim();
 
-    if (cleanDriverId.startsWith("riksho-driver:test:")) {
+    // Check if test mode is explicitly tagged
+    if (
+      cleanDriverId.toLowerCase().includes("test") ||
+      cleanDriverId.startsWith("riksho-driver:test:") ||
+      cleanDriverId.startsWith("test:") ||
+      cleanDriverId.startsWith("[TEST]")
+    ) {
       isTest = true;
-      cleanDriverId = cleanDriverId.replace("riksho-driver:test:", "").trim();
-    } else if (cleanDriverId.startsWith("test:")) {
-      isTest = true;
-      cleanDriverId = cleanDriverId.replace("test:", "").trim();
-    } else if (cleanDriverId.startsWith("riksho-driver:")) {
-      cleanDriverId = cleanDriverId.replace("riksho-driver:", "").trim();
-    } else if (cleanDriverId.includes("driver_id=")) {
-      const match = cleanDriverId.match(/driver_id=([a-f0-9-]+)/i);
-      if (match) cleanDriverId = match[1];
+    }
+
+    // Extract UUID if present anywhere in the scanned payload
+    const uuidMatch = cleanDriverId.match(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i);
+    if (uuidMatch) {
+      cleanDriverId = uuidMatch[0];
+    } else {
+      // Clean prefixes if raw text
+      cleanDriverId = cleanDriverId
+        .replace(/^riksho-driver:test:/i, "")
+        .replace(/^riksho-driver:/i, "")
+        .replace(/^test:/i, "")
+        .replace(/^\[TEST\]/i, "")
+        .trim();
+
+      if (cleanDriverId.includes("driver_id=")) {
+        const match = cleanDriverId.match(/driver_id=([^&]+)/i);
+        if (match) cleanDriverId = match[1];
+      }
     }
 
     // 1. Verify promoter is approved
@@ -258,19 +273,51 @@ export async function promotersRoutes(app: FastifyInstance) {
       });
     }
 
-    // 2. Fetch driver profile from drivers and users table
-    const { data: driver, error: driverErr } = await supabaseAdmin
+    // 2. Fetch driver profile: first check drivers table by id
+    let { data: driver } = await supabaseAdmin
       .from("drivers")
       .select("id, created_at, verification_status")
       .eq("id", cleanDriverId)
-      .single();
+      .maybeSingle();
 
-    if (driverErr || !driver) {
+    // If not found in drivers table directly, check users table for phone or id
+    let driverUserId = cleanDriverId;
+    if (!driver) {
+      const cleanPhoneDigits = cleanDriverId.replace(/\D/g, "");
+      const { data: matchedUser } = await supabaseAdmin
+        .from("users")
+        .select("id, created_at, phone, name")
+        .or(`id.eq.${cleanDriverId},phone.eq.${cleanDriverId},phone.eq.+91${cleanPhoneDigits},phone.eq.${cleanPhoneDigits}`)
+        .maybeSingle();
+
+      if (matchedUser) {
+        driverUserId = matchedUser.id;
+        const { data: driverByUserId } = await supabaseAdmin
+          .from("drivers")
+          .select("id, created_at, verification_status")
+          .eq("id", matchedUser.id)
+          .maybeSingle();
+
+        if (driverByUserId) {
+          driver = driverByUserId;
+        } else {
+          driver = {
+            id: matchedUser.id,
+            created_at: matchedUser.created_at || new Date().toISOString(),
+            verification_status: "approved",
+          };
+        }
+      }
+    }
+
+    if (!driver) {
       return reply.status(404).send({
         error: "DRIVER_NOT_FOUND",
-        message: "No driver found matching this QR code / ID.",
+        message: `No driver found matching scanned payload (${rawDriverId.slice(0, 30)}). Please ensure the driver has registered on Riksho Partner.`,
       });
     }
+
+    cleanDriverId = driver.id || driverUserId;
 
     // Check 2-hour auto-bomb window (if driver was registered >= 2 hours ago, mark as [TEST])
     if (driver.created_at) {
@@ -286,7 +333,7 @@ export async function promotersRoutes(app: FastifyInstance) {
       .from("users")
       .select("name, phone")
       .eq("id", cleanDriverId)
-      .single();
+      .maybeSingle();
 
     const rawDriverName = driverUser?.name || "Riksho Partner";
     const driverName = isTest && !rawDriverName.startsWith("[TEST]")
