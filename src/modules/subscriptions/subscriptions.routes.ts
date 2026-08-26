@@ -47,8 +47,8 @@ export async function subscriptionsRoutes(app: FastifyInstance) {
           id: "11111111-1111-1111-1111-111111111111",
           name: "5 Hours Trial",
           duration_hours: 5,
-          original_price: 2900,
-          price: 1900,
+          original_price: 5000,
+          price: 3900,
           badge: "trial",
           is_active: true,
           sort_order: 1,
@@ -57,8 +57,8 @@ export async function subscriptionsRoutes(app: FastifyInstance) {
           id: "22222222-2222-2222-2222-222222222222",
           name: "8 Hours Shift",
           duration_hours: 8,
-          original_price: 4900,
-          price: 2900,
+          original_price: 8000,
+          price: 5900,
           badge: null,
           is_active: true,
           sort_order: 2,
@@ -67,8 +67,8 @@ export async function subscriptionsRoutes(app: FastifyInstance) {
           id: "33333333-3333-3333-3333-333333333333",
           name: "24 Hours Pass",
           duration_hours: 24,
-          original_price: 9900,
-          price: 4900,
+          original_price: 10000,
+          price: 8500,
           badge: "best_value",
           is_active: true,
           sort_order: 3,
@@ -77,8 +77,8 @@ export async function subscriptionsRoutes(app: FastifyInstance) {
           id: "44444444-4444-4444-4444-444444444444",
           name: "7 Days Pass",
           duration_hours: 168,
-          original_price: 49900,
-          price: 24900,
+          original_price: 69900,
+          price: 49900,
           badge: "weekly_pass",
           is_active: true,
           sort_order: 4,
@@ -356,6 +356,29 @@ export async function subscriptionsRoutes(app: FastifyInstance) {
       success: true,
       message: `[TEST] Recharge activated! Valid until ${expiresTime.toLocaleString()}.`,
       subscription: sub,
+    });
+  });
+
+  /**
+   * GET /subscriptions/history — Get driver's past purchased subscriptions
+   */
+  app.get("/subscriptions/history", { preHandler: [authGuard] }, async (request, reply) => {
+    const driverId = request.user!.id;
+
+    const { data: history, error } = await supabaseAdmin
+      .from("driver_subscriptions")
+      .select("*")
+      .eq("driver_id", driverId)
+      .order("created_at", { ascending: false })
+      .limit(20);
+
+    if (error) {
+      logger.error({ error, driverId }, "Failed to fetch subscription history");
+      return reply.status(500).send({ error: "Failed to fetch history" });
+    }
+
+    return reply.send({
+      history: history || [],
     });
   });
 }

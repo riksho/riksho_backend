@@ -17,10 +17,10 @@ CREATE TABLE IF NOT EXISTS public.subscription_plans (
 -- 2. Seed Default Anchored Plans
 INSERT INTO public.subscription_plans (name, duration_hours, original_price, price, badge, is_active, sort_order)
 VALUES
-    ('5 Hours Trial', 5, 2900, 1900, 'trial', TRUE, 1),
-    ('8 Hours Shift', 8, 4900, 2900, NULL, TRUE, 2),
-    ('24 Hours Pass', 24, 9900, 4900, 'best_value', TRUE, 3),
-    ('7 Days Pass', 168, 49900, 24900, 'weekly_pass', TRUE, 4)
+    ('5 Hours Trial', 5, 5000, 3900, 'trial', TRUE, 1),
+    ('8 Hours Shift', 8, 8000, 5900, NULL, TRUE, 2),
+    ('24 Hours Pass', 24, 10000, 8500, 'best_value', TRUE, 3),
+    ('7 Days Pass', 168, 69900, 49900, 'weekly_pass', TRUE, 4)
 ON CONFLICT DO NOTHING;
 
 -- 3. Driver Subscriptions Table
