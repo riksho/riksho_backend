@@ -258,18 +258,38 @@ export async function driversRoutes(app: FastifyInstance) {
   // GET /drivers/trips — Paginated completed rides history
   app.get("/drivers/trips", { preHandler: [authGuard, requireRole("driver")] }, async (request, reply) => {
     const driverId = request.user!.id;
-    const { limit = "10", cursor } = request.query as { limit?: string; cursor?: string };
+    const { limit = "50", cursor, range } = request.query as { limit?: string; cursor?: string; range?: string };
 
     let query = supabaseAdmin
       .from("rides")
-      .select("id, origin_address, dest_address, fare_final, completed_at, service_type")
+      .select("id, origin_address, dest_address, fare_final, offered_fare, completed_at, service_type, payment_method")
       .eq("driver_id", driverId)
       .eq("status", "completed")
-      .order("completed_at", { ascending: false })
-      .limit(parseInt(limit, 10));
+      .order("completed_at", { ascending: false });
+
+    // Filter by date range if provided
+    if (range === "today") {
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      query = query.gte("completed_at", today.toISOString());
+    } else if (range === "week") {
+      const weekAgo = new Date();
+      weekAgo.setDate(weekAgo.getDate() - 7);
+      weekAgo.setHours(0, 0, 0, 0);
+      query = query.gte("completed_at", weekAgo.toISOString());
+    } else if (range === "month") {
+      const monthAgo = new Date();
+      monthAgo.setMonth(monthAgo.getMonth() - 1);
+      monthAgo.setHours(0, 0, 0, 0);
+      query = query.gte("completed_at", monthAgo.toISOString());
+    }
 
     if (cursor) {
       query = query.lt("completed_at", cursor);
+    }
+
+    if (limit) {
+      query = query.limit(parseInt(limit, 10));
     }
 
     const { data, error } = await query;
