@@ -26,6 +26,7 @@ import { settlementRoutes } from "./modules/settlement/settlement.routes.js";
 import { fcmRoutes } from "./modules/notifications/fcm.routes.js";
 import { promotersRoutes } from "./modules/promoters/promoters.routes.js";
 import { subscriptionsRoutes } from "./modules/subscriptions/subscriptions.routes.js";
+import { promosRoutes } from "./modules/promos/promos.routes.js";
 
 // Firebase init (side-effect: initialises firebase-admin)
 import "./config/firebase.js";
@@ -144,6 +145,7 @@ await app.register(settlementRoutes);
 await app.register(fcmRoutes);
 await app.register(promotersRoutes);
 await app.register(subscriptionsRoutes);
+await app.register(promosRoutes);
 
 // --- Start Background Services ---
 startScheduler();
