@@ -1,8 +1,23 @@
 import crypto from "node:crypto";
 import { logger } from "../common/logger.js";
 
-export const RAZORPAY_KEY_ID = process.env.RAZORPAY_KEY_ID || "rzp_test_RikshoBuddyDummy";
-export const RAZORPAY_KEY_SECRET = process.env.RAZORPAY_KEY_SECRET || "rzp_secret_dummy";
+const mode = (process.env.RAZORPAY_MODE || "test").toLowerCase().trim();
+export const IS_RAZORPAY_LIVE = mode === "live" || mode === "production";
+
+export const RAZORPAY_KEY_ID =
+  (IS_RAZORPAY_LIVE ? process.env.RAZORPAY_LIVE_KEY_ID : process.env.RAZORPAY_TEST_KEY_ID) ||
+  process.env.RAZORPAY_KEY_ID ||
+  "rzp_test_RikshoBuddyDummy";
+
+export const RAZORPAY_KEY_SECRET =
+  (IS_RAZORPAY_LIVE ? process.env.RAZORPAY_LIVE_KEY_SECRET : process.env.RAZORPAY_TEST_KEY_SECRET) ||
+  process.env.RAZORPAY_KEY_SECRET ||
+  "rzp_secret_dummy";
+
+export const RAZORPAY_WEBHOOK_SECRET =
+  (IS_RAZORPAY_LIVE ? process.env.RAZORPAY_LIVE_WEBHOOK_SECRET : process.env.RAZORPAY_TEST_WEBHOOK_SECRET) ||
+  process.env.RAZORPAY_WEBHOOK_SECRET ||
+  "";
 
 /**
  * Creates an order directly via Razorpay API v1
