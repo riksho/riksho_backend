@@ -911,9 +911,9 @@ export async function ridesRoutes(app: FastifyInstance) {
       })
       .eq("id", driverId);
 
-    // Create earnings ledger entry (graceful — ignore if table missing pre-migration)
-    const commission = Math.round(fareFinal * 0.15); // 15% platform fee
-    const net = fareFinal - commission;
+    // Create earnings ledger entry (0% commission on subscription model — driver keeps 100%)
+    const commission = 0;
+    const net = fareFinal;
     const { error: earningsError } = await supabaseAdmin.from("earnings").insert({
       ride_id: id,
       driver_id: driverId,
