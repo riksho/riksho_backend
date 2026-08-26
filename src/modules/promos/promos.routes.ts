@@ -13,9 +13,12 @@ const CreatePromoSchema = z.object({
   code: z
     .string()
     .min(3)
-    .max(12)
-    .regex(/^[A-Za-z0-9_-]+$/, "Code must contain only letters and numbers"),
-  amount: z.number().positive("Amount must be greater than 0"),
+    .max(15)
+    .regex(/^[A-Za-z0-9_-]+$/, "Code must contain only letters, numbers, and dashes"),
+  type: z.enum(["credit", "free_pass"]).optional().default("credit"),
+  amount: z.number().min(0, "Amount cannot be negative").optional().default(0),
+  duration_days: z.number().int().positive("Duration must be at least 1 day").nullable().optional(),
+  plan_name: z.string().max(100).nullable().optional(),
   max_redemptions: z.number().int().positive().nullable().optional(),
   expires_at: z.string().datetime().nullable().optional(),
   description: z.string().max(255).optional(),
@@ -24,7 +27,10 @@ const CreatePromoSchema = z.object({
 
 const UpdatePromoSchema = z.object({
   is_active: z.boolean().optional(),
-  amount: z.number().positive().optional(),
+  type: z.enum(["credit", "free_pass"]).optional(),
+  amount: z.number().min(0).optional(),
+  duration_days: z.number().int().positive().nullable().optional(),
+  plan_name: z.string().max(100).nullable().optional(),
   max_redemptions: z.number().int().positive().nullable().optional(),
   expires_at: z.string().datetime().nullable().optional(),
   description: z.string().max(255).optional(),
@@ -60,7 +66,7 @@ export async function promosRoutes(app: FastifyInstance) {
   });
 
   /**
-   * POST /promos/redeem — Redeem a promo code for usable balance
+   * POST /promos/redeem — Redeem a promo code for credit or a free access pass
    */
   app.post("/promos/redeem", { preHandler: [authGuard] }, async (request, reply) => {
     const driverId = request.user!.id;
@@ -79,12 +85,58 @@ export async function promosRoutes(app: FastifyInstance) {
       return reply.status(500).send({ error: "Could not validate promo code." });
     }
 
-    // Built-in hardcoded fallback for common test vouchers if not in db
+    // Built-in hardcoded fallback for common test vouchers if not in database
     if (!promo) {
+      if (code === "FREE7DAYS" || code === "FREE30DAYS") {
+        const days = code === "FREE30DAYS" ? 30 : 7;
+        const durationHours = days * 24;
+
+        // Check if driver has an existing active subscription -> stack duration
+        const { data: existingActive } = await supabaseAdmin
+          .from("driver_subscriptions")
+          .select("expires_at")
+          .eq("driver_id", driverId)
+          .eq("status", "active")
+          .gt("expires_at", new Date().toISOString())
+          .order("expires_at", { ascending: false })
+          .limit(1)
+          .maybeSingle();
+
+        const startTime = new Date();
+        let baseTime = startTime.getTime();
+        if (existingActive?.expires_at) {
+          const existingExpires = new Date(existingActive.expires_at).getTime();
+          if (existingExpires > baseTime) {
+            baseTime = existingExpires;
+          }
+        }
+
+        const expiresTime = new Date(baseTime + durationHours * 60 * 60 * 1000);
+        const planTitle = `Free ${days}-Day Pass`;
+
+        await supabaseAdmin.from("driver_subscriptions").insert({
+          driver_id: driverId,
+          plan_name: planTitle,
+          duration_hours: durationHours,
+          amount_paid: 0,
+          status: "active",
+          started_at: startTime.toISOString(),
+          expires_at: expiresTime.toISOString(),
+        });
+
+        return reply.send({
+          success: true,
+          type: "free_pass",
+          duration_days: days,
+          plan_name: planTitle,
+          expires_at: expiresTime.toISOString(),
+          message: `Free ${days}-day pass activated! You now have unlimited access to drive.`,
+        });
+      }
+
       if (code === "RIKSHO50" || code === "WELCOME19" || code === "FREEPASS") {
         const reward = code === "FREEPASS" ? 49 : code === "RIKSHO50" ? 50 : 19;
         
-        // Fetch current driver balance
         const { data: driver } = await supabaseAdmin
           .from("drivers")
           .select("coupon_balance")
@@ -101,6 +153,7 @@ export async function promosRoutes(app: FastifyInstance) {
 
         return reply.send({
           success: true,
+          type: "credit",
           amount: reward,
           new_balance: newBal,
           message: `₹${reward} credit added to your usable balance.`,
@@ -134,7 +187,7 @@ export async function promosRoutes(app: FastifyInstance) {
     }
 
     // 5. Check if this driver already redeemed this promo
-    const { data: existingRedemption, error: redErr } = await supabaseAdmin
+    const { data: existingRedemption } = await supabaseAdmin
       .from("driver_promo_redemptions")
       .select("id")
       .eq("promo_code_id", promo.id)
@@ -147,9 +200,92 @@ export async function promosRoutes(app: FastifyInstance) {
       });
     }
 
-    const rewardAmount = Number(promo.amount);
+    const promoType = promo.type || "credit";
 
-    // 6. Record redemption
+    // 6. Handle Type: Free Subscription Access Pass (Days)
+    if (promoType === "free_pass") {
+      const days = Number(promo.duration_days) || 1;
+      const durationHours = days * 24;
+      const planTitle = promo.plan_name || `Free ${days}-Day Promo Pass`;
+
+      // Check if driver has an existing active subscription -> stack duration
+      const { data: existingActive } = await supabaseAdmin
+        .from("driver_subscriptions")
+        .select("expires_at")
+        .eq("driver_id", driverId)
+        .eq("status", "active")
+        .gt("expires_at", new Date().toISOString())
+        .order("expires_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      const startTime = new Date();
+      let baseTime = startTime.getTime();
+      if (existingActive?.expires_at) {
+        const existingExpires = new Date(existingActive.expires_at).getTime();
+        if (existingExpires > baseTime) {
+          baseTime = existingExpires;
+        }
+      }
+
+      const expiresTime = new Date(baseTime + durationHours * 60 * 60 * 1000);
+
+      // Insert active free subscription pass
+      const { data: newSub, error: subErr } = await supabaseAdmin
+        .from("driver_subscriptions")
+        .insert({
+          driver_id: driverId,
+          plan_name: planTitle,
+          duration_hours: durationHours,
+          amount_paid: 0,
+          status: "active",
+          started_at: startTime.toISOString(),
+          expires_at: expiresTime.toISOString(),
+        })
+        .select()
+        .single();
+
+      if (subErr) {
+        logger.error({ subErr }, "Failed to activate free pass subscription");
+        return reply.status(500).send({ error: "Failed to activate free access pass." });
+      }
+
+      // Record redemption audit
+      await supabaseAdmin.from("driver_promo_redemptions").insert({
+        promo_code_id: promo.id,
+        driver_id: driverId,
+        code: promo.code,
+        amount: 0,
+        type: "free_pass",
+        duration_days: days,
+        subscription_id: newSub?.id,
+      });
+
+      // Increment redemption count
+      await supabaseAdmin
+        .from("driver_promo_codes")
+        .update({
+          redemption_count: (promo.redemption_count || 0) + 1,
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", promo.id);
+
+      logger.info({ driverId, code, days, expiresTime }, "Driver redeemed free access pass promo code");
+
+      return reply.send({
+        success: true,
+        type: "free_pass",
+        duration_days: days,
+        plan_name: planTitle,
+        expires_at: expiresTime.toISOString(),
+        message: `Free ${days}-day pass activated! You now have unlimited access to drive.`,
+      });
+    }
+
+    // 7. Handle Type: Usable Balance Credit (₹)
+    const rewardAmount = Number(promo.amount || 0);
+
+    // Record redemption
     const { error: insertRedemptionErr } = await supabaseAdmin
       .from("driver_promo_redemptions")
       .insert({
@@ -157,6 +293,7 @@ export async function promosRoutes(app: FastifyInstance) {
         driver_id: driverId,
         code: promo.code,
         amount: rewardAmount,
+        type: "credit",
       });
 
     if (insertRedemptionErr) {
@@ -164,7 +301,7 @@ export async function promosRoutes(app: FastifyInstance) {
       return reply.status(500).send({ error: "Failed to redeem promo code." });
     }
 
-    // 7. Increment redemption count
+    // Increment redemption count
     await supabaseAdmin
       .from("driver_promo_codes")
       .update({
@@ -173,7 +310,7 @@ export async function promosRoutes(app: FastifyInstance) {
       })
       .eq("id", promo.id);
 
-    // 8. Update driver's usable coupon_balance
+    // Update driver's usable coupon_balance
     const { data: driverData } = await supabaseAdmin
       .from("drivers")
       .select("coupon_balance")
@@ -188,10 +325,11 @@ export async function promosRoutes(app: FastifyInstance) {
       .update({ coupon_balance: newBalance })
       .eq("id", driverId);
 
-    logger.info({ driverId, code, rewardAmount, newBalance }, "Driver redeemed promo code");
+    logger.info({ driverId, code, rewardAmount, newBalance }, "Driver redeemed credit promo code");
 
     return reply.send({
       success: true,
+      type: "credit",
       amount: rewardAmount,
       new_balance: newBalance,
       message: `₹${rewardAmount} credit added to your usable balance.`,
@@ -219,7 +357,6 @@ export async function promosRoutes(app: FastifyInstance) {
       return reply.status(500).send({ error: "Failed to fetch promo codes" });
     }
 
-    // Calculate summary statistics
     const promoList = promos || [];
     const totalCodes = promoList.length;
     const activeCodes = promoList.filter((p) => p.is_active).length;
@@ -241,7 +378,7 @@ export async function promosRoutes(app: FastifyInstance) {
   });
 
   /**
-   * POST /admin/promos — Create a new promo code (e.g. 6-letter/number code)
+   * POST /admin/promos — Create a new promo code (Credit ₹ OR Free Access Pass Days)
    */
   app.post("/admin/promos", adminGuard, async (request, reply) => {
     const adminId = request.user!.id;
@@ -261,11 +398,19 @@ export async function promosRoutes(app: FastifyInstance) {
       });
     }
 
+    const isFreePass = body.type === "free_pass";
+    const durationDays = isFreePass ? body.duration_days || 7 : null;
+    const planName = isFreePass ? body.plan_name?.trim() || `Free ${durationDays}-Day Pass` : null;
+    const amount = isFreePass ? 0 : body.amount;
+
     const { data: newPromo, error } = await supabaseAdmin
       .from("driver_promo_codes")
       .insert({
         code,
-        amount: body.amount,
+        type: body.type || "credit",
+        amount,
+        duration_days: durationDays,
+        plan_name: planName,
         max_redemptions: body.max_redemptions || null,
         expires_at: body.expires_at || null,
         description: body.description?.trim() || null,
@@ -280,7 +425,7 @@ export async function promosRoutes(app: FastifyInstance) {
       return reply.status(500).send({ error: "Failed to create promo code" });
     }
 
-    logger.info({ adminId, code: newPromo.code, amount: newPromo.amount }, "Admin created promo code");
+    logger.info({ adminId, code: newPromo.code, type: newPromo.type }, "Admin created promo code");
     return reply.status(201).send({ promo: newPromo });
   });
 
@@ -296,7 +441,10 @@ export async function promosRoutes(app: FastifyInstance) {
     };
 
     if (typeof body.is_active === "boolean") updatePayload.is_active = body.is_active;
+    if (body.type !== undefined) updatePayload.type = body.type;
     if (typeof body.amount === "number") updatePayload.amount = body.amount;
+    if (body.duration_days !== undefined) updatePayload.duration_days = body.duration_days;
+    if (body.plan_name !== undefined) updatePayload.plan_name = body.plan_name?.trim() || null;
     if (body.max_redemptions !== undefined) updatePayload.max_redemptions = body.max_redemptions;
     if (body.expires_at !== undefined) updatePayload.expires_at = body.expires_at;
     if (body.description !== undefined) updatePayload.description = body.description?.trim() || null;
