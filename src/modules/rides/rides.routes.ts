@@ -37,6 +37,15 @@ export async function ridesRoutes(app: FastifyInstance) {
     }
 
     const route = routeData.routes[0];
+
+    // Reject intercity rides beyond local operating radius (> 65 km)
+    if (route.distance > 65000) {
+      return reply.status(400).send({
+        error: "INTERCITY_NOT_ALLOWED",
+        message: "Intercity rides are not supported. Please choose a destination within your local city.",
+      });
+    }
+
     const fareEstimate = calculateFare(body.vehicle_type, route.distance, route.duration);
 
     // Honour the customer's offered fare from the find-ride stepper (fix A3), but
