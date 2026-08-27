@@ -165,10 +165,10 @@ export async function promosRoutes(app: FastifyInstance) {
       });
     }
 
-    // 2. Check if promo is active
-    if (!promo.is_active) {
+    // 2. Check if promo is active or discontinued
+    if (!promo.is_active || promo.is_deleted) {
       return reply.status(400).send({
-        error: "This promo code is no longer active.",
+        error: "This promo code is no longer active or has been discontinued.",
       });
     }
 
@@ -350,6 +350,7 @@ export async function promosRoutes(app: FastifyInstance) {
     const { data: promos, error } = await supabaseAdmin
       .from("driver_promo_codes")
       .select("*")
+      .or("is_deleted.is.null,is_deleted.eq.false")
       .order("created_at", { ascending: false });
 
     if (error) {
@@ -359,7 +360,7 @@ export async function promosRoutes(app: FastifyInstance) {
 
     const promoList = promos || [];
     const totalCodes = promoList.length;
-    const activeCodes = promoList.filter((p) => p.is_active).length;
+    const activeCodes = promoList.filter((p) => p.is_active && !p.is_deleted).length;
     const totalRedemptions = promoList.reduce((sum, p) => sum + (p.redemption_count || 0), 0);
     const totalValueDistributed = promoList.reduce(
       (sum, p) => sum + (p.redemption_count || 0) * Number(p.amount || 0),
@@ -385,14 +386,14 @@ export async function promosRoutes(app: FastifyInstance) {
     const body = CreatePromoSchema.parse(request.body);
     const code = body.code.trim().toUpperCase();
 
-    // Check if code already exists
+    // Check if active code already exists
     const { data: existing } = await supabaseAdmin
       .from("driver_promo_codes")
-      .select("id")
+      .select("id, is_deleted")
       .eq("code", code)
       .maybeSingle();
 
-    if (existing) {
+    if (existing && !existing.is_deleted) {
       return reply.status(400).send({
         error: `Promo code "${code}" already exists. Please choose a different code.`,
       });
@@ -403,26 +404,58 @@ export async function promosRoutes(app: FastifyInstance) {
     const planName = isFreePass ? body.plan_name?.trim() || `Free ${durationDays}-Day Pass` : null;
     const amount = isFreePass ? 0 : body.amount;
 
-    const { data: newPromo, error } = await supabaseAdmin
-      .from("driver_promo_codes")
-      .insert({
-        code,
-        type: body.type || "credit",
-        amount,
-        duration_days: durationDays,
-        plan_name: planName,
-        max_redemptions: body.max_redemptions || null,
-        expires_at: body.expires_at || null,
-        description: body.description?.trim() || null,
-        is_active: body.is_active ?? true,
-        created_by: adminId,
-      })
-      .select()
-      .single();
+    let newPromo;
+    if (existing && existing.is_deleted) {
+      // Re-activate and overwrite previously deleted code
+      const { data: updated, error: updateErr } = await supabaseAdmin
+        .from("driver_promo_codes")
+        .update({
+          type: body.type || "credit",
+          amount,
+          duration_days: durationDays,
+          plan_name: planName,
+          max_redemptions: body.max_redemptions || null,
+          expires_at: body.expires_at || null,
+          description: body.description?.trim() || null,
+          is_active: body.is_active ?? true,
+          is_deleted: false,
+          deleted_at: null,
+          created_by: adminId,
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", existing.id)
+        .select()
+        .single();
 
-    if (error) {
-      logger.error({ error, body }, "Failed to create admin promo code");
-      return reply.status(500).send({ error: "Failed to create promo code" });
+      if (updateErr) {
+        logger.error({ error: updateErr }, "Failed to reactivate promo code");
+        return reply.status(500).send({ error: "Failed to create promo code" });
+      }
+      newPromo = updated;
+    } else {
+      const { data: created, error: insertErr } = await supabaseAdmin
+        .from("driver_promo_codes")
+        .insert({
+          code,
+          type: body.type || "credit",
+          amount,
+          duration_days: durationDays,
+          plan_name: planName,
+          max_redemptions: body.max_redemptions || null,
+          expires_at: body.expires_at || null,
+          description: body.description?.trim() || null,
+          is_active: body.is_active ?? true,
+          is_deleted: false,
+          created_by: adminId,
+        })
+        .select()
+        .single();
+
+      if (insertErr) {
+        logger.error({ error: insertErr, body }, "Failed to create admin promo code");
+        return reply.status(500).send({ error: "Failed to create promo code" });
+      }
+      newPromo = created;
     }
 
     logger.info({ adminId, code: newPromo.code, type: newPromo.type }, "Admin created promo code");
@@ -466,20 +499,33 @@ export async function promosRoutes(app: FastifyInstance) {
 
   /**
    * DELETE /admin/promos/:id — Delete a promo code
+   * Soft-deletes to block new redemptions while preserving redemption history and ongoing driver access validity.
    */
   app.delete("/admin/promos/:id", adminGuard, async (request, reply) => {
     const { id } = request.params as { id: string };
 
-    const { error } = await supabaseAdmin
+    const { data: updated, error } = await supabaseAdmin
       .from("driver_promo_codes")
-      .delete()
-      .eq("id", id);
+      .update({
+        is_active: false,
+        is_deleted: true,
+        deleted_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", id)
+      .select()
+      .single();
 
     if (error) {
       logger.error({ error, id }, "Failed to delete promo code");
       return reply.status(500).send({ error: "Failed to delete promo code" });
     }
 
-    return reply.send({ success: true, message: "Promo code deleted successfully." });
+    logger.info({ id, code: updated?.code }, "Admin deleted promo code");
+    return reply.send({
+      success: true,
+      message: `Promo code "${updated?.code || id}" deleted successfully. New claims are now blocked; existing active driver benefits remain valid until expiry.`,
+      promo: updated,
+    });
   });
 }
