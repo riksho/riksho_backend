@@ -158,9 +158,10 @@ export async function subscriptionsRoutes(app: FastifyInstance) {
       .eq("id", plan_id)
       .maybeSingle();
 
-    let planName = "Driver Pass";
-    let durationHours = 24;
-    let pricePaise = 4900;
+    const fallbackMatch = DEFAULT_FALLBACK_PLANS.find((p) => p.id === plan_id);
+    let planName = fallbackMatch?.name || "Driver Pass";
+    let durationHours = fallbackMatch?.duration_hours || 24;
+    let pricePaise = fallbackMatch?.price || 3900;
 
     if (!planErr && plan) {
       planName = plan.name;
@@ -183,9 +184,9 @@ export async function subscriptionsRoutes(app: FastifyInstance) {
       }
     }
 
-    const payablePaise = pricePaise - discountPaise;
+    const payablePaise = Math.max(0, pricePaise - discountPaise);
 
-    // If 100% covered by promo balance -> activate immediately without Razorpay!
+    // If 100% covered by promo balance / 0 payable -> activate immediately without Razorpay!
     if (payablePaise <= 0) {
       const { data: existingActive } = await supabaseAdmin
         .from("driver_subscriptions")
@@ -216,16 +217,18 @@ export async function subscriptionsRoutes(app: FastifyInstance) {
         .maybeSingle();
       const currentBal = Number(currentDriver?.coupon_balance || 0);
       const usedRs = discountPaise / 100;
-      await supabaseAdmin
-        .from("drivers")
-        .update({ coupon_balance: Math.max(0, currentBal - usedRs) })
-        .eq("id", driverId);
+      if (usedRs > 0) {
+        await supabaseAdmin
+          .from("drivers")
+          .update({ coupon_balance: Math.max(0, currentBal - usedRs) })
+          .eq("id", driverId);
+      }
 
       const { data: sub } = await supabaseAdmin
         .from("driver_subscriptions")
         .insert({
           driver_id: driverId,
-          plan_id: plan ? plan.id : null,
+          plan_id: plan ? plan.id : (fallbackMatch ? fallbackMatch.id : null),
           plan_name: planName,
           duration_hours: durationHours,
           amount_paid: 0,
@@ -264,7 +267,7 @@ export async function subscriptionsRoutes(app: FastifyInstance) {
         .from("driver_subscriptions")
         .insert({
           driver_id: driverId,
-          plan_id: plan ? plan.id : null,
+          plan_id: plan ? plan.id : (fallbackMatch ? fallbackMatch.id : null),
           plan_name: planName,
           duration_hours: durationHours,
           amount_paid: payablePaise,
@@ -326,14 +329,22 @@ export async function subscriptionsRoutes(app: FastifyInstance) {
 
     // Check if discount was applied and deduct from promo balance
     if (sub?.plan_id) {
+      let planPrice = 0;
       const { data: planRow } = await supabaseAdmin
         .from("subscription_plans")
         .select("price")
         .eq("id", sub.plan_id)
         .maybeSingle();
 
-      if (planRow && planRow.price > sub.amount_paid) {
-        const discountUsedRs = (planRow.price - sub.amount_paid) / 100;
+      if (planRow) {
+        planPrice = planRow.price;
+      } else {
+        const fb = DEFAULT_FALLBACK_PLANS.find((p) => p.id === sub.plan_id);
+        if (fb) planPrice = fb.price;
+      }
+
+      if (planPrice > (sub.amount_paid || 0)) {
+        const discountUsedRs = (planPrice - sub.amount_paid) / 100;
         if (discountUsedRs > 0) {
           const { data: dRow } = await supabaseAdmin
             .from("drivers")
