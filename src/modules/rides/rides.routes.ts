@@ -12,7 +12,7 @@ import {
   type VehicleType,
 } from "../fares/fares.config.js";
 import { findNearbyDrivers } from "../matching/matching.service.js";
-import { broadcastRideStatus, broadcastOrderStatus } from "../matching/broadcast.service.js";
+import { broadcastRideStatus, broadcastOrderStatus, broadcastDriverBid, broadcastBidResult } from "../matching/broadcast.service.js";
 import { sendPush } from "../notifications/push.service.js";
 import { fireWebhook } from "../notifications/webhook.service.js";
 import {
@@ -210,6 +210,32 @@ export async function ridesRoutes(app: FastifyInstance) {
         ride.vehicle_type = v?.type;
         ride.vehicle_plate = v?.plate;
         ride.vehicle_model = v?.model;
+      }
+    }
+
+    // Append active bids if customer is viewing a requested ride
+    if (ride.customer_id === userId && ride.status === "requested") {
+      const { data: activeBids } = await supabaseAdmin
+        .from("ride_bids")
+        .select("id, driver_id, amount, eta_min, status, drivers!ride_bids_driver_id_fkey(name, rating, vehicles!vehicles_driver_id_fkey(plate, model))")
+        .eq("ride_id", id)
+        .eq("status", "active");
+
+      if (activeBids) {
+        ride.bids = activeBids.map((b: any) => {
+          const d = b.drivers;
+          const v = d?.vehicles ? (Array.isArray(d.vehicles) ? d.vehicles[0] : d.vehicles) : null;
+          return {
+            bid_id: b.id,
+            driver_id: b.driver_id,
+            driver_name: d?.name || "Driver",
+            driver_rating: d?.rating ?? null,
+            vehicle_plate: v?.plate,
+            vehicle_model: v?.model,
+            amount: Number(b.amount),
+            eta_min: b.eta_min,
+          };
+        });
       }
     }
 
@@ -483,6 +509,25 @@ export async function ridesRoutes(app: FastifyInstance) {
     syncQuickOrder(id, "cancelled").catch(() => {});
     notifyBusinessWebhook(id, "cancelled", { cancelled_by: cancelledBy }).catch(() => {});
 
+    // Edge case #9: Reject all active bids and notify every bidding driver
+    const { data: activeBids } = await supabaseAdmin
+      .from("ride_bids")
+      .select("id, driver_id")
+      .eq("ride_id", id)
+      .eq("status", "active");
+
+    if (activeBids && activeBids.length > 0) {
+      await supabaseAdmin
+        .from("ride_bids")
+        .update({ status: "rejected" })
+        .eq("ride_id", id)
+        .eq("status", "active");
+
+      await Promise.allSettled(
+        activeBids.map((bid) => broadcastBidResult(bid.driver_id, id, "bid_rejected"))
+      );
+    }
+
     // Push-notify the other party so they know even if backgrounded
     const notifyUserId = cancelledBy === "customer" ? data.driver_id : data.customer_id;
     if (notifyUserId) {
@@ -540,55 +585,285 @@ export async function ridesRoutes(app: FastifyInstance) {
     return reply.send({ status: "declined" });
   });
 
-  // POST /rides/:id/accept — Driver accepts (atomic claim)
+  // POST /rides/:id/accept — Driver accepts at the offered price.
+  // In the bidding model this is a convenience alias: it submits a bid at the
+  // exact offered fare rather than atomically claiming the ride. The customer
+  // picks from the bid list via POST /rides/:id/select-bid.
   app.post("/rides/:id/accept", { preHandler: [authGuard, requireRole("driver")] }, async (request, reply) => {
     const { id } = request.params as { id: string };
     const driverId = request.user!.id;
 
-    // Atomic: only the first driver to accept wins
-    const { data, error } = await supabaseAdmin
+    // Verify ride is still requestable
+    const { data: ride } = await supabaseAdmin
+      .from("rides")
+      .select("status, fare_estimate, offered_fare")
+      .eq("id", id)
+      .single();
+
+    if (!ride || ride.status !== "requested") {
+      return reply.status(409).send({ error: "Ride already taken or not available" });
+    }
+
+    // Check this driver hasn't been excluded
+    const { data: declined } = await supabaseAdmin
+      .from("ride_declines")
+      .select("id")
+      .eq("ride_id", id)
+      .eq("driver_id", driverId)
+      .maybeSingle();
+
+    if (declined) {
+      return reply.status(403).send({ error: "You previously declined this ride" });
+    }
+
+    const bidAmount = Number(ride.offered_fare ?? ride.fare_estimate);
+
+    // Fetch driver info for the broadcast
+    const { data: driverInfo } = await supabaseAdmin
+      .from("drivers")
+      .select("name, rating, vehicles!vehicles_driver_id_fkey(type, plate, model)")
+      .eq("id", driverId)
+      .single();
+
+    const v = driverInfo?.vehicles
+      ? (Array.isArray(driverInfo.vehicles) ? driverInfo.vehicles[0] : driverInfo.vehicles)
+      : null;
+
+    // Upsert bid (driver accepts at the offered price)
+    const { data: bid, error: bidError } = await supabaseAdmin
+      .from("ride_bids")
+      .upsert(
+        {
+          ride_id: id,
+          driver_id: driverId,
+          amount: bidAmount,
+          status: "active",
+        },
+        { onConflict: "ride_id,driver_id" }
+      )
+      .select()
+      .single();
+
+    if (bidError || !bid) {
+      logger.error({ rideId: id, driverId, err: bidError }, "Failed to upsert bid on accept");
+      return reply.status(500).send({ error: "Failed to submit bid" });
+    }
+
+    await supabaseAdmin.from("ride_events").insert({
+      ride_id: id,
+      type: "bid_submitted",
+      payload: { driver_id: driverId, amount: bidAmount, via: "accept" },
+    });
+
+    // Broadcast driver bid to customer's live list
+    broadcastDriverBid(id, {
+      bid_id: bid.id,
+      driver_id: driverId,
+      driver_name: driverInfo?.name || "Driver",
+      driver_rating: driverInfo?.rating ?? null,
+      vehicle_plate: v?.plate,
+      vehicle_model: v?.model,
+      amount: bidAmount,
+    });
+
+    return reply.send({ status: "bid_submitted", bid_id: bid.id, amount: bidAmount });
+  });
+
+  // POST /rides/:id/bid — Driver submits or updates a bid (counter-offer)
+  app.post("/rides/:id/bid", { preHandler: [authGuard, requireRole("driver")] }, async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const driverId = request.user!.id;
+
+    const BidSchema = z.object({
+      amount: z.number().positive().max(100_000),
+      eta_min: z.number().int().min(1).max(120).optional(),
+    });
+    const body = BidSchema.parse(request.body);
+
+    // Verify ride is still requestable
+    const { data: ride } = await supabaseAdmin
+      .from("rides")
+      .select("status, fare_estimate, offered_fare")
+      .eq("id", id)
+      .single();
+
+    if (!ride || ride.status !== "requested") {
+      return reply.status(409).send({ error: "Ride already taken or not available" });
+    }
+
+    // Rate-limit: check if driver submitted a bid in the last 2 seconds
+    const { data: recentBid } = await supabaseAdmin
+      .from("ride_bids")
+      .select("updated_at")
+      .eq("ride_id", id)
+      .eq("driver_id", driverId)
+      .maybeSingle();
+
+    if (recentBid?.updated_at) {
+      const lastUpdate = new Date(recentBid.updated_at).getTime();
+      if (Date.now() - lastUpdate < 2000) {
+        return reply.status(429).send({ error: "Please wait a moment before updating your bid" });
+      }
+    }
+
+    // Check this driver hasn't been excluded
+    const { data: declined } = await supabaseAdmin
+      .from("ride_declines")
+      .select("id")
+      .eq("ride_id", id)
+      .eq("driver_id", driverId)
+      .maybeSingle();
+
+    if (declined) {
+      return reply.status(403).send({ error: "You previously declined this ride" });
+    }
+
+    // Clamp the bid amount using the same logic as customer fares (0.8x - 2.0x)
+    const fareEstimate = Number(ride.fare_estimate);
+    const clampedAmount = clampOfferedFare(body.amount, fareEstimate);
+
+    // Fetch driver info for the broadcast
+    const { data: driverInfo } = await supabaseAdmin
+      .from("drivers")
+      .select("name, rating, vehicles!vehicles_driver_id_fkey(type, plate, model)")
+      .eq("id", driverId)
+      .single();
+
+    const v = driverInfo?.vehicles
+      ? (Array.isArray(driverInfo.vehicles) ? driverInfo.vehicles[0] : driverInfo.vehicles)
+      : null;
+
+    // Upsert bid
+    const { data: bid, error: bidError } = await supabaseAdmin
+      .from("ride_bids")
+      .upsert(
+        {
+          ride_id: id,
+          driver_id: driverId,
+          amount: clampedAmount,
+          eta_min: body.eta_min ?? null,
+          status: "active",
+        },
+        { onConflict: "ride_id,driver_id" }
+      )
+      .select()
+      .single();
+
+    if (bidError || !bid) {
+      logger.error({ rideId: id, driverId, err: bidError }, "Failed to upsert bid");
+      return reply.status(500).send({ error: "Failed to submit bid" });
+    }
+
+    await supabaseAdmin.from("ride_events").insert({
+      ride_id: id,
+      type: "bid_submitted",
+      payload: { driver_id: driverId, amount: clampedAmount, eta_min: body.eta_min, original_amount: body.amount },
+    });
+
+    // Broadcast driver bid to customer's live list
+    broadcastDriverBid(id, {
+      bid_id: bid.id,
+      driver_id: driverId,
+      driver_name: driverInfo?.name || "Driver",
+      driver_rating: driverInfo?.rating ?? null,
+      vehicle_plate: v?.plate,
+      vehicle_model: v?.model,
+      amount: clampedAmount,
+      eta_min: body.eta_min ?? null,
+    });
+
+    return reply.send({
+      status: "bid_submitted",
+      bid_id: bid.id,
+      amount: clampedAmount,
+      clamped: clampedAmount !== Math.round(body.amount),
+    });
+  });
+
+  // POST /rides/:id/select-bid — Customer selects a driver from the bid list
+  app.post("/rides/:id/select-bid", { preHandler: [authGuard, requireRole("customer")] }, async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const customerId = request.user!.id;
+
+    const SelectBidSchema = z.object({
+      bid_id: z.string().uuid(),
+    });
+    const body = SelectBidSchema.parse(request.body);
+
+    // Fetch the winning bid
+    const { data: winningBid } = await supabaseAdmin
+      .from("ride_bids")
+      .select("id, driver_id, amount, ride_id, status")
+      .eq("id", body.bid_id)
+      .eq("ride_id", id)
+      .eq("status", "active")
+      .single();
+
+    if (!winningBid) {
+      return reply.status(404).send({ error: "Bid not found or already resolved" });
+    }
+
+    // Atomic: assign the ride to this driver (same locking pattern as the old accept)
+    const { data: updatedRide, error: rideError } = await supabaseAdmin
       .from("rides")
       .update({
-        driver_id: driverId,
+        driver_id: winningBid.driver_id,
         status: "accepted",
         accepted_at: new Date().toISOString(),
+        offered_fare: winningBid.amount, // Lock fare to the winning bid amount
       })
       .eq("id", id)
+      .eq("customer_id", customerId)
       .eq("status", "requested")
       .is("driver_id", null)
       .select()
       .single();
 
-    if (error || !data) {
-      return reply.status(409).send({ error: "Ride already taken or not available" });
+    if (rideError || !updatedRide) {
+      return reply.status(409).send({ error: "Ride already assigned or cancelled" });
     }
 
-    // Update driver status
-    await supabaseAdmin.from("drivers").update({ status: "on_trip" }).eq("id", driverId);
+    // Mark winning bid
+    await supabaseAdmin
+      .from("ride_bids")
+      .update({ status: "won" })
+      .eq("id", winningBid.id);
+
+    // Reject all other active bids for this ride
+    const { data: rejectedBids } = await supabaseAdmin
+      .from("ride_bids")
+      .update({ status: "rejected" })
+      .eq("ride_id", id)
+      .eq("status", "active")
+      .neq("id", winningBid.id)
+      .select("driver_id");
+
+    // Update winning driver status to on_trip
+    await supabaseAdmin.from("drivers").update({ status: "on_trip" }).eq("id", winningBid.driver_id);
 
     await supabaseAdmin.from("ride_events").insert({
       ride_id: id,
       type: "accepted",
-      payload: { driver_id: driverId },
+      payload: { driver_id: winningBid.driver_id, bid_id: winningBid.id, amount: winningBid.amount },
     });
 
-    // B6: Fetch driver and vehicle info to broadcast to customer
+    // Fetch driver/vehicle info for the customer broadcast
     const { data: driverInfo } = await supabaseAdmin
       .from("drivers")
       .select("name, phone, rating, vehicles!vehicles_driver_id_fkey(type, plate, model)")
-      .eq("id", driverId)
+      .eq("id", winningBid.driver_id)
       .single();
 
     let vType, vPlate, vModel;
     if (driverInfo?.vehicles) {
-      const v = Array.isArray(driverInfo.vehicles) ? driverInfo.vehicles[0] : driverInfo.vehicles;
-      vType = v?.type;
-      vPlate = v?.plate;
-      vModel = v?.model;
+      const veh = Array.isArray(driverInfo.vehicles) ? driverInfo.vehicles[0] : driverInfo.vehicles;
+      vType = veh?.type;
+      vPlate = veh?.plate;
+      vModel = veh?.model;
     }
 
     const acceptPayload = {
-      driver_id: driverId,
+      driver_id: winningBid.driver_id,
       driver_name: driverInfo?.name || "Driver",
       driver_phone: driverInfo?.phone,
       driver_rating: driverInfo?.rating,
@@ -597,19 +872,70 @@ export async function ridesRoutes(app: FastifyInstance) {
       vehicle_model: vModel,
     };
 
-    // Broadcast to customer: driver accepted with full info
+    // Broadcast acceptance to customer (same contract as before — searching.tsx already handles this)
     broadcastRideStatus(id, "accepted", acceptPayload);
-    notifyBusinessWebhook(id, "accepted", { driver_id: driverId }).catch(() => {});
-    
-    if (data.customer_id) {
-      sendPush([data.customer_id], {
-        title: "Driver Accepted",
-        body: "Your driver is on the way to the pickup location.",
-        data: { ride_id: id, status: "accepted" },
-      }).catch(() => {});
+    notifyBusinessWebhook(id, "accepted", { driver_id: winningBid.driver_id }).catch(() => {});
+
+    // Notify winning driver
+    broadcastBidResult(winningBid.driver_id, id, "bid_won");
+    sendPush([winningBid.driver_id], {
+      title: "Bid Accepted!",
+      body: "The rider chose your offer. Head to the pickup location.",
+      data: { ride_id: id, status: "bid_won" },
+    }).catch(() => {});
+
+    // Notify rejected drivers
+    if (rejectedBids && rejectedBids.length > 0) {
+      await Promise.allSettled(
+        rejectedBids.map((b) => broadcastBidResult(b.driver_id, id, "bid_rejected"))
+      );
     }
 
-    return reply.send({ status: "accepted", ride: data });
+    // Push to customer
+    sendPush([customerId], {
+      title: "Driver Confirmed",
+      body: "Your driver is on the way to the pickup location.",
+      data: { ride_id: id, status: "accepted" },
+    }).catch(() => {});
+
+    return reply.send({ status: "accepted", ride: updatedRide });
+  });
+
+  // POST /rides/:id/withdraw-bid — Driver withdraws their bid before customer selects
+  app.post("/rides/:id/withdraw-bid", { preHandler: [authGuard, requireRole("driver")] }, async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const driverId = request.user!.id;
+
+    const { data: bid, error } = await supabaseAdmin
+      .from("ride_bids")
+      .update({ status: "withdrawn" })
+      .eq("ride_id", id)
+      .eq("driver_id", driverId)
+      .eq("status", "active")
+      .select()
+      .single();
+
+    if (error || !bid) {
+      return reply.status(404).send({ error: "No active bid to withdraw" });
+    }
+
+    await supabaseAdmin.from("ride_events").insert({
+      ride_id: id,
+      type: "bid_withdrawn",
+      payload: { driver_id: driverId, bid_id: bid.id },
+    });
+
+    // Broadcast withdrawal to customer so their UI removes the card
+    broadcastDriverBid(id, {
+      bid_id: bid.id,
+      driver_id: driverId,
+      driver_name: "",
+      driver_rating: null,
+      amount: 0,
+      withdrawn: true,
+    });
+
+    return reply.send({ status: "withdrawn" });
   });
 
   // POST /rides/:id/arrived — Driver arrived at pickup

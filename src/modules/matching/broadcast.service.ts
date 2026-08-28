@@ -128,3 +128,84 @@ export async function broadcastRideOffer(
     logger.warn({ driverId, err }, "Broadcast ride offer error (non-fatal)");
   }
 }
+
+/**
+ * Broadcast a driver's bid to the `ride:{rideId}` channel so the
+ * customer's searching screen can render it in the live bid list.
+ */
+export async function broadcastDriverBid(
+  rideId: string,
+  payload: {
+    bid_id: string;
+    driver_id: string;
+    driver_name: string;
+    driver_rating: number | null;
+    vehicle_plate?: string;
+    vehicle_model?: string;
+    amount: number;
+    eta_min?: number | null;
+    withdrawn?: boolean;
+  }
+): Promise<void> {
+  try {
+    const url = `${env.SUPABASE_URL}/realtime/v1/api/broadcast`;
+    const res = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        apikey: env.SUPABASE_ANON_KEY,
+        Authorization: `Bearer ${env.SUPABASE_SERVICE_ROLE_KEY}`,
+      },
+      body: JSON.stringify({
+        messages: [{
+          topic: `ride:${rideId}`,
+          event: "driver_bid",
+          payload,
+        }],
+      }),
+    });
+
+    if (!res.ok) {
+      logger.warn({ rideId, driverId: payload.driver_id, httpStatus: res.status }, "Broadcast driver bid failed");
+    } else {
+      logger.info({ rideId, driverId: payload.driver_id, amount: payload.amount }, "Broadcasted driver bid");
+    }
+  } catch (err) {
+    logger.warn({ rideId, err }, "Broadcast driver bid error (non-fatal)");
+  }
+}
+
+/**
+ * Notify a specific driver about the outcome of their bid:
+ * "bid_won" (customer picked them) or "bid_rejected" (customer picked someone else).
+ */
+export async function broadcastBidResult(
+  driverId: string,
+  rideId: string,
+  result: "bid_won" | "bid_rejected"
+): Promise<void> {
+  try {
+    const url = `${env.SUPABASE_URL}/realtime/v1/api/broadcast`;
+    const res = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        apikey: env.SUPABASE_ANON_KEY,
+        Authorization: `Bearer ${env.SUPABASE_SERVICE_ROLE_KEY}`,
+      },
+      body: JSON.stringify({
+        messages: [{
+          topic: `driver:${driverId}`,
+          event: result,
+          payload: { ride_id: rideId },
+        }],
+      }),
+    });
+
+    if (!res.ok) {
+      logger.warn({ driverId, rideId, result, httpStatus: res.status }, "Broadcast bid result failed");
+    }
+  } catch (err) {
+    logger.warn({ driverId, rideId, err }, "Broadcast bid result error (non-fatal)");
+  }
+}
