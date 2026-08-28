@@ -25,6 +25,49 @@ const TestActivateSchema = z.object({
   duration_hours: z.number().int().positive().optional(),
 });
 
+const DEFAULT_FALLBACK_PLANS = [
+  {
+    id: "11111111-1111-1111-1111-111111111111",
+    name: "5 Hours Pass",
+    duration_hours: 5,
+    original_price: 5000,
+    price: 3900,
+    badge: "trial",
+    is_active: true,
+    sort_order: 1,
+  },
+  {
+    id: "22222222-2222-2222-2222-222222222222",
+    name: "8 Hours Pass",
+    duration_hours: 8,
+    original_price: 8000,
+    price: 5900,
+    badge: null,
+    is_active: true,
+    sort_order: 2,
+  },
+  {
+    id: "33333333-3333-3333-3333-333333333333",
+    name: "12 Hours Pass",
+    duration_hours: 12,
+    original_price: 10000,
+    price: 7900,
+    badge: "best_value",
+    is_active: true,
+    sort_order: 3,
+  },
+  {
+    id: "44444444-4444-4444-4444-444444444444",
+    name: "24 Hours Pass",
+    duration_hours: 24,
+    original_price: 16000,
+    price: 12900,
+    badge: "day_pass",
+    is_active: true,
+    sort_order: 4,
+  },
+];
+
 export async function subscriptionsRoutes(app: FastifyInstance) {
   /**
    * GET /subscriptions/plans — List all active subscription recharge plans
@@ -43,49 +86,7 @@ export async function subscriptionsRoutes(app: FastifyInstance) {
 
     // Default fallback plans if table is not yet seeded
     if (!plans || plans.length === 0) {
-      const defaultPlans = [
-        {
-          id: "11111111-1111-1111-1111-111111111111",
-          name: "5 Hours Trial",
-          duration_hours: 5,
-          original_price: 5000,
-          price: 3900,
-          badge: "trial",
-          is_active: true,
-          sort_order: 1,
-        },
-        {
-          id: "22222222-2222-2222-2222-222222222222",
-          name: "8 Hours Shift",
-          duration_hours: 8,
-          original_price: 8000,
-          price: 5900,
-          badge: null,
-          is_active: true,
-          sort_order: 2,
-        },
-        {
-          id: "33333333-3333-3333-3333-333333333333",
-          name: "24 Hours Pass",
-          duration_hours: 24,
-          original_price: 10000,
-          price: 8500,
-          badge: "best_value",
-          is_active: true,
-          sort_order: 3,
-        },
-        {
-          id: "44444444-4444-4444-4444-444444444444",
-          name: "7 Days Pass",
-          duration_hours: 168,
-          original_price: 69900,
-          price: 49900,
-          badge: "weekly_pass",
-          is_active: true,
-          sort_order: 4,
-        },
-      ];
-      return reply.send({ plans: defaultPlans, razorpay_key_id: RAZORPAY_KEY_ID });
+      return reply.send({ plans: DEFAULT_FALLBACK_PLANS, razorpay_key_id: RAZORPAY_KEY_ID });
     }
 
     return reply.send({ plans, razorpay_key_id: RAZORPAY_KEY_ID });

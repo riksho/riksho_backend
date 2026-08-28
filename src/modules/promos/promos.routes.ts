@@ -92,8 +92,8 @@ export async function promosRoutes(app: FastifyInstance) {
 
     // Built-in hardcoded fallback for common test vouchers (up to 6 chars)
     if (!promo) {
-      if (code === "RIK50" || code === "FREEP" || code === "WEL19") {
-        const reward = code === "FREEP" ? 49 : code === "RIK50" ? 50 : 19;
+      if (code === "RIK100" || code === "RIKSHO" || code === "FREE07" || code === "WEL100") {
+        const reward = code === "FREE07" ? 49 : code === "RIKSHO" ? 50 : 100;
         
         const { data: driver } = await supabaseAdmin
           .from("drivers")
