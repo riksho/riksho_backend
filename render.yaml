@@ -20,5 +20,9 @@ services:
         sync: false
       - key: SB_SECRET_KEY
         sync: false
+      - key: AGORA_APP_ID
+        sync: false
+      - key: AGORA_APP_CERTIFICATE
+        sync: false
       - key: CORS_ORIGINS
         value: "*"

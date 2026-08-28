@@ -10,7 +10,8 @@ import {
 } from "../../config/razorpay.js";
 
 const CreateOrderSchema = z.object({
-  plan_id: z.string().uuid(),
+  plan_id: z.string(),
+  use_promo_balance: z.boolean().optional().default(false),
 });
 
 const VerifyPaymentSchema = z.object({
@@ -20,7 +21,7 @@ const VerifyPaymentSchema = z.object({
 });
 
 const TestActivateSchema = z.object({
-  plan_id: z.string().uuid().optional(),
+  plan_id: z.string().optional(),
   duration_hours: z.number().int().positive().optional(),
 });
 
@@ -143,18 +144,18 @@ export async function subscriptionsRoutes(app: FastifyInstance) {
   });
 
   /**
-   * POST /subscriptions/create-order — Create Razorpay order for a plan
+   * POST /subscriptions/create-order — Create Razorpay order for a plan with promo balance support
    */
   app.post("/subscriptions/create-order", { preHandler: [authGuard] }, async (request, reply) => {
     const driverId = request.user!.id;
-    const { plan_id } = CreateOrderSchema.parse(request.body);
+    const { plan_id, use_promo_balance } = CreateOrderSchema.parse(request.body);
 
     // Fetch plan details
     const { data: plan, error: planErr } = await supabaseAdmin
       .from("subscription_plans")
       .select("*")
       .eq("id", plan_id)
-      .single();
+      .maybeSingle();
 
     let planName = "Driver Pass";
     let durationHours = 24;
@@ -166,15 +167,94 @@ export async function subscriptionsRoutes(app: FastifyInstance) {
       pricePaise = plan.price;
     }
 
+    // Check promo balance
+    let discountPaise = 0;
+    if (use_promo_balance) {
+      const { data: driver } = await supabaseAdmin
+        .from("drivers")
+        .select("coupon_balance")
+        .eq("id", driverId)
+        .maybeSingle();
+
+      const balRs = Number(driver?.coupon_balance || 0);
+      if (balRs > 0) {
+        discountPaise = Math.min(pricePaise, Math.round(balRs * 100));
+      }
+    }
+
+    const payablePaise = pricePaise - discountPaise;
+
+    // If 100% covered by promo balance -> activate immediately without Razorpay!
+    if (payablePaise <= 0) {
+      const { data: existingActive } = await supabaseAdmin
+        .from("driver_subscriptions")
+        .select("expires_at")
+        .eq("driver_id", driverId)
+        .eq("status", "active")
+        .gt("expires_at", new Date().toISOString())
+        .order("expires_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      const startTime = new Date();
+      let baseTime = startTime.getTime();
+      if (existingActive?.expires_at) {
+        const existingExpires = new Date(existingActive.expires_at).getTime();
+        if (existingExpires > baseTime) {
+          baseTime = existingExpires;
+        }
+      }
+
+      const expiresTime = new Date(baseTime + durationHours * 60 * 60 * 1000);
+
+      // Deduct used promo balance
+      const { data: currentDriver } = await supabaseAdmin
+        .from("drivers")
+        .select("coupon_balance")
+        .eq("id", driverId)
+        .maybeSingle();
+      const currentBal = Number(currentDriver?.coupon_balance || 0);
+      const usedRs = discountPaise / 100;
+      await supabaseAdmin
+        .from("drivers")
+        .update({ coupon_balance: Math.max(0, currentBal - usedRs) })
+        .eq("id", driverId);
+
+      const { data: sub } = await supabaseAdmin
+        .from("driver_subscriptions")
+        .insert({
+          driver_id: driverId,
+          plan_id: plan ? plan.id : null,
+          plan_name: planName,
+          duration_hours: durationHours,
+          amount_paid: 0,
+          razorpay_order_id: `promo_covered_${Date.now()}`,
+          razorpay_payment_id: `promo_pay_${Date.now()}`,
+          status: "active",
+          started_at: startTime.toISOString(),
+          expires_at: expiresTime.toISOString(),
+        })
+        .select()
+        .single();
+
+      return reply.status(201).send({
+        success: true,
+        free_activated: true,
+        message: `Pass activated using ₹${usedRs.toFixed(0)} promo balance!`,
+        subscription: sub,
+      });
+    }
+
     try {
       const order = await createRazorpayOrder({
-        amount: pricePaise,
+        amount: payablePaise,
         currency: "INR",
         receipt: `sub_${driverId.slice(0, 8)}_${Date.now()}`,
         notes: {
           driver_id: driverId,
           plan_id,
           duration_hours: String(durationHours),
+          discount_paise: String(discountPaise),
         },
       });
 
@@ -186,7 +266,7 @@ export async function subscriptionsRoutes(app: FastifyInstance) {
           plan_id: plan ? plan.id : null,
           plan_name: planName,
           duration_hours: durationHours,
-          amount_paid: pricePaise,
+          amount_paid: payablePaise,
           razorpay_order_id: order.id,
           status: "pending",
         })
@@ -204,6 +284,8 @@ export async function subscriptionsRoutes(app: FastifyInstance) {
         razorpay_key_id: RAZORPAY_KEY_ID,
         subscription_id: sub?.id,
         plan_name: planName,
+        discount_applied: discountPaise > 0,
+        discount_amount: discountPaise,
       });
     } catch (err: any) {
       logger.error({ err: err.message }, "Failed to initiate Razorpay order");
@@ -240,6 +322,31 @@ export async function subscriptionsRoutes(app: FastifyInstance) {
       .maybeSingle();
 
     const durationHours = sub?.duration_hours || 24;
+
+    // Check if discount was applied and deduct from promo balance
+    if (sub?.plan_id) {
+      const { data: planRow } = await supabaseAdmin
+        .from("subscription_plans")
+        .select("price")
+        .eq("id", sub.plan_id)
+        .maybeSingle();
+
+      if (planRow && planRow.price > sub.amount_paid) {
+        const discountUsedRs = (planRow.price - sub.amount_paid) / 100;
+        if (discountUsedRs > 0) {
+          const { data: dRow } = await supabaseAdmin
+            .from("drivers")
+            .select("coupon_balance")
+            .eq("id", driverId)
+            .maybeSingle();
+          const currentBal = Number(dRow?.coupon_balance || 0);
+          await supabaseAdmin
+            .from("drivers")
+            .update({ coupon_balance: Math.max(0, currentBal - discountUsedRs) })
+            .eq("id", driverId);
+        }
+      }
+    }
 
     // Check if driver already has an unexpired subscription -> stack duration
     const { data: existingActive } = await supabaseAdmin
@@ -369,6 +476,7 @@ export async function subscriptionsRoutes(app: FastifyInstance) {
       .from("driver_subscriptions")
       .select("*")
       .eq("driver_id", driverId)
+      .neq("status", "pending")
       .order("created_at", { ascending: false })
       .limit(20);
 

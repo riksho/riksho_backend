@@ -6,15 +6,14 @@ import { requireRole } from "../../common/roles.guard.js";
 import { logger } from "../../common/logger.js";
 
 const RedeemPromoSchema = z.object({
-  code: z.string().min(1).max(20),
+  code: z.string().min(1, "Please enter a promo code").max(6, "Promo code cannot exceed 6 characters"),
 });
 
 const CreatePromoSchema = z.object({
   code: z
     .string()
-    .min(3)
-    .max(15)
-    .regex(/^[A-Za-z0-9_-]+$/, "Code must contain only letters, numbers, and dashes"),
+    .min(1)
+    .max(6, "Promo code cannot exceed 6 characters"),
   type: z.enum(["credit", "free_pass"]).optional().default("credit"),
   amount: z.number().min(0, "Amount cannot be negative").optional().default(0),
   duration_days: z.number().int().positive("Duration must be at least 1 day").nullable().optional(),
@@ -70,8 +69,14 @@ export async function promosRoutes(app: FastifyInstance) {
    */
   app.post("/promos/redeem", { preHandler: [authGuard] }, async (request, reply) => {
     const driverId = request.user!.id;
-    const body = RedeemPromoSchema.parse(request.body);
-    const code = body.code.trim().toUpperCase();
+    const parsed = RedeemPromoSchema.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.status(400).send({
+        error: "Promo codes must be up to 6 characters (letters, numbers, symbols).",
+      });
+    }
+
+    const code = parsed.data.code.trim().toUpperCase();
 
     // 1. Fetch promo code details
     const { data: promo, error: promoError } = await supabaseAdmin
@@ -82,60 +87,13 @@ export async function promosRoutes(app: FastifyInstance) {
 
     if (promoError) {
       logger.error({ error: promoError, code }, "Failed to query promo code");
-      return reply.status(500).send({ error: "Could not validate promo code." });
+      return reply.status(400).send({ error: "Could not validate promo code. Please try again." });
     }
 
-    // Built-in hardcoded fallback for common test vouchers if not in database
+    // Built-in hardcoded fallback for common test vouchers (up to 6 chars)
     if (!promo) {
-      if (code === "FREE7DAYS" || code === "FREE30DAYS") {
-        const days = code === "FREE30DAYS" ? 30 : 7;
-        const durationHours = days * 24;
-
-        // Check if driver has an existing active subscription -> stack duration
-        const { data: existingActive } = await supabaseAdmin
-          .from("driver_subscriptions")
-          .select("expires_at")
-          .eq("driver_id", driverId)
-          .eq("status", "active")
-          .gt("expires_at", new Date().toISOString())
-          .order("expires_at", { ascending: false })
-          .limit(1)
-          .maybeSingle();
-
-        const startTime = new Date();
-        let baseTime = startTime.getTime();
-        if (existingActive?.expires_at) {
-          const existingExpires = new Date(existingActive.expires_at).getTime();
-          if (existingExpires > baseTime) {
-            baseTime = existingExpires;
-          }
-        }
-
-        const expiresTime = new Date(baseTime + durationHours * 60 * 60 * 1000);
-        const planTitle = `Free ${days}-Day Pass`;
-
-        await supabaseAdmin.from("driver_subscriptions").insert({
-          driver_id: driverId,
-          plan_name: planTitle,
-          duration_hours: durationHours,
-          amount_paid: 0,
-          status: "active",
-          started_at: startTime.toISOString(),
-          expires_at: expiresTime.toISOString(),
-        });
-
-        return reply.send({
-          success: true,
-          type: "free_pass",
-          duration_days: days,
-          plan_name: planTitle,
-          expires_at: expiresTime.toISOString(),
-          message: `Free ${days}-day pass activated! You now have unlimited access to drive.`,
-        });
-      }
-
-      if (code === "RIKSHO50" || code === "WELCOME19" || code === "FREEPASS") {
-        const reward = code === "FREEPASS" ? 49 : code === "RIKSHO50" ? 50 : 19;
+      if (code === "RIK50" || code === "FREEP" || code === "WEL19") {
+        const reward = code === "FREEP" ? 49 : code === "RIK50" ? 50 : 19;
         
         const { data: driver } = await supabaseAdmin
           .from("drivers")
@@ -160,7 +118,7 @@ export async function promosRoutes(app: FastifyInstance) {
         });
       }
 
-      return reply.status(404).send({
+      return reply.status(400).send({
         error: "Invalid promo code. Please check and try again.",
       });
     }
@@ -168,7 +126,7 @@ export async function promosRoutes(app: FastifyInstance) {
     // 2. Check if promo is active or discontinued
     if (!promo.is_active || promo.is_deleted) {
       return reply.status(400).send({
-        error: "This promo code is no longer active or has been discontinued.",
+        error: "This promo code is no longer active.",
       });
     }
 
