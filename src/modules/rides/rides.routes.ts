@@ -221,7 +221,30 @@ export async function ridesRoutes(app: FastifyInstance) {
         .eq("ride_id", id)
         .eq("status", "active");
 
-      if (activeBids) {
+      if (activeBids && activeBids.length > 0) {
+        const driverIds = activeBids.map((b: any) => b.driver_id);
+        const { data: profileDocs } = await supabaseAdmin
+          .from("driver_documents")
+          .select("driver_id, storage_path")
+          .in("driver_id", driverIds)
+          .eq("doc_type", "profile_photo");
+
+        const avatarMap = new Map<string, string>();
+        if (profileDocs && profileDocs.length > 0) {
+          await Promise.allSettled(
+            profileDocs.map(async (doc) => {
+              if (doc.storage_path) {
+                const { data: signed } = await supabaseAdmin.storage
+                  .from("documents")
+                  .createSignedUrl(doc.storage_path, 3600);
+                if (signed?.signedUrl) {
+                  avatarMap.set(doc.driver_id, signed.signedUrl);
+                }
+              }
+            })
+          );
+        }
+
         ride.bids = activeBids.map((b: any) => {
           const d = b.drivers;
           const v = d?.vehicles ? (Array.isArray(d.vehicles) ? d.vehicles[0] : d.vehicles) : null;
@@ -230,6 +253,7 @@ export async function ridesRoutes(app: FastifyInstance) {
             driver_id: b.driver_id,
             driver_name: d?.name || "Driver",
             driver_rating: d?.rating ?? null,
+            driver_avatar: avatarMap.get(b.driver_id) || null,
             vehicle_plate: v?.plate,
             vehicle_model: v?.model,
             amount: Number(b.amount),
@@ -722,12 +746,29 @@ export async function ridesRoutes(app: FastifyInstance) {
     const fareEstimate = Number(ride.fare_estimate);
     const clampedAmount = clampOfferedFare(body.amount, fareEstimate);
 
-    // Fetch driver info for the broadcast
+    // Fetch driver info and profile photo for the broadcast
     const { data: driverInfo } = await supabaseAdmin
       .from("drivers")
       .select("name, rating, vehicles!vehicles_driver_id_fkey(type, plate, model)")
       .eq("id", driverId)
       .single();
+
+    const { data: profileDoc } = await supabaseAdmin
+      .from("driver_documents")
+      .select("storage_path")
+      .eq("driver_id", driverId)
+      .eq("doc_type", "profile_photo")
+      .maybeSingle();
+
+    let driverAvatar: string | null = null;
+    if (profileDoc?.storage_path) {
+      const { data: signed } = await supabaseAdmin.storage
+        .from("documents")
+        .createSignedUrl(profileDoc.storage_path, 3600);
+      if (signed?.signedUrl) {
+        driverAvatar = signed.signedUrl;
+      }
+    }
 
     const v = driverInfo?.vehicles
       ? (Array.isArray(driverInfo.vehicles) ? driverInfo.vehicles[0] : driverInfo.vehicles)
@@ -766,6 +807,7 @@ export async function ridesRoutes(app: FastifyInstance) {
       driver_id: driverId,
       driver_name: driverInfo?.name || "Driver",
       driver_rating: driverInfo?.rating ?? null,
+      driver_avatar: driverAvatar,
       vehicle_plate: v?.plate,
       vehicle_model: v?.model,
       amount: clampedAmount,
@@ -936,6 +978,51 @@ export async function ridesRoutes(app: FastifyInstance) {
     });
 
     return reply.send({ status: "withdrawn" });
+  });
+
+  // POST /rides/:id/reject-bid — Customer rejects an individual driver's bid
+  app.post("/rides/:id/reject-bid", { preHandler: [authGuard, requireRole("customer")] }, async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const customerId = request.user!.id;
+
+    const RejectBidSchema = z.object({
+      bid_id: z.string().uuid(),
+    });
+    const body = RejectBidSchema.parse(request.body);
+
+    const { data: ride } = await supabaseAdmin
+      .from("rides")
+      .select("id, status, customer_id")
+      .eq("id", id)
+      .single();
+
+    if (!ride || ride.customer_id !== customerId) {
+      return reply.status(403).send({ error: "Not authorized to reject bids on this ride" });
+    }
+
+    const { data: bid, error } = await supabaseAdmin
+      .from("ride_bids")
+      .update({ status: "rejected" })
+      .eq("id", body.bid_id)
+      .eq("ride_id", id)
+      .eq("status", "active")
+      .select("driver_id, amount")
+      .single();
+
+    if (error || !bid) {
+      return reply.status(404).send({ error: "Bid not found or already resolved" });
+    }
+
+    await supabaseAdmin.from("ride_events").insert({
+      ride_id: id,
+      type: "bid_rejected_by_customer",
+      payload: { driver_id: bid.driver_id, bid_id: body.bid_id },
+    });
+
+    // Notify driver that their bid was declined so they can bid again
+    broadcastBidResult(bid.driver_id, id, "bid_rejected");
+
+    return reply.send({ status: "bid_rejected", bid_id: body.bid_id });
   });
 
   // POST /rides/:id/arrived — Driver arrived at pickup

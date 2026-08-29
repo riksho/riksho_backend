@@ -140,6 +140,7 @@ export async function broadcastDriverBid(
     driver_id: string;
     driver_name: string;
     driver_rating: number | null;
+    driver_avatar?: string | null;
     vehicle_plate?: string;
     vehicle_model?: string;
     amount: number;
