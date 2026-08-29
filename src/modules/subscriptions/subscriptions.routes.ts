@@ -97,12 +97,23 @@ export async function subscriptionsRoutes(app: FastifyInstance) {
    */
   app.get("/subscriptions/active", { preHandler: [authGuard] }, async (request, reply) => {
     const driverId = request.user!.id;
+    const now = Date.now();
+    const nowIso = new Date().toISOString();
+
+    // Batch expire all past active subscriptions for this driver
+    await supabaseAdmin
+      .from("driver_subscriptions")
+      .update({ status: "expired", updated_at: nowIso })
+      .eq("driver_id", driverId)
+      .eq("status", "active")
+      .lte("expires_at", nowIso);
 
     const { data: sub, error } = await supabaseAdmin
       .from("driver_subscriptions")
       .select("*")
       .eq("driver_id", driverId)
       .eq("status", "active")
+      .gt("expires_at", nowIso)
       .order("expires_at", { ascending: false })
       .limit(1)
       .maybeSingle();
@@ -116,21 +127,8 @@ export async function subscriptionsRoutes(app: FastifyInstance) {
       return reply.send({ active: false, subscription: null });
     }
 
-    const now = Date.now();
     const expiresTime = new Date(sub.expires_at).getTime();
-    const isExpired = now >= expiresTime;
-
-    if (isExpired) {
-      // Mark as expired in background
-      await supabaseAdmin
-        .from("driver_subscriptions")
-        .update({ status: "expired", updated_at: new Date().toISOString() })
-        .eq("id", sub.id);
-
-      return reply.send({ active: false, subscription: { ...sub, status: "expired" }, is_expired: true });
-    }
-
-    const remainingMs = expiresTime - now;
+    const remainingMs = Math.max(0, expiresTime - now);
     const remainingHours = Math.floor(remainingMs / (1000 * 60 * 60));
     const remainingMinutes = Math.floor((remainingMs % (1000 * 60 * 60)) / (1000 * 60));
 
@@ -483,6 +481,16 @@ export async function subscriptionsRoutes(app: FastifyInstance) {
    */
   app.get("/subscriptions/history", { preHandler: [authGuard] }, async (request, reply) => {
     const driverId = request.user!.id;
+    const now = Date.now();
+    const nowIso = new Date().toISOString();
+
+    // Auto-expire all past active subscriptions for this driver in the database
+    await supabaseAdmin
+      .from("driver_subscriptions")
+      .update({ status: "expired", updated_at: nowIso })
+      .eq("driver_id", driverId)
+      .eq("status", "active")
+      .lte("expires_at", nowIso);
 
     const { data: history, error } = await supabaseAdmin
       .from("driver_subscriptions")
@@ -490,15 +498,22 @@ export async function subscriptionsRoutes(app: FastifyInstance) {
       .eq("driver_id", driverId)
       .neq("status", "pending")
       .order("created_at", { ascending: false })
-      .limit(20);
+      .limit(100);
 
     if (error) {
       logger.error({ error, driverId }, "Failed to fetch subscription history");
       return reply.status(500).send({ error: "Failed to fetch history" });
     }
 
+    const sanitizedHistory = (history || []).map((item) => {
+      if (item.status === "active" && item.expires_at && now >= new Date(item.expires_at).getTime()) {
+        return { ...item, status: "expired" };
+      }
+      return item;
+    });
+
     return reply.send({
-      history: history || [],
+      history: sanitizedHistory,
     });
   });
 }
