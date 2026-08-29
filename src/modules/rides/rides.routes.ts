@@ -155,6 +155,92 @@ export async function ridesRoutes(app: FastifyInstance) {
     });
   });
 
+  // GET /rides/active — Retrieve current active / in-progress ride for user or driver
+  app.get("/rides/active", { preHandler: [authGuard] }, async (request, reply) => {
+    const userId = request.user!.id;
+    const role = request.user!.role;
+
+    let query = supabaseAdmin
+      .from("rides")
+      .select("*, ride_events(*)");
+
+    if (role === "driver") {
+      query = query
+        .eq("driver_id", userId)
+        .in("status", ["accepted", "arriving", "in_progress"]);
+    } else {
+      query = query
+        .eq("customer_id", userId)
+        .in("status", ["requested", "accepted", "arriving", "in_progress"]);
+    }
+
+    const { data: rides, error } = await query
+      .order("created_at", { ascending: false })
+      .limit(1);
+
+    if (error || !rides || rides.length === 0) {
+      return reply.send({ active: false, ride: null });
+    }
+
+    const ride = rides[0];
+
+    // Mask OTP from driver
+    if (ride.customer_id !== userId) {
+      delete ride.ride_otp;
+    }
+
+    // Attach customer info if driver is calling
+    if (role === "driver") {
+      const { data: customer } = await supabaseAdmin
+        .from("users")
+        .select("name, phone")
+        .eq("id", ride.customer_id)
+        .single();
+      if (customer) {
+        ride.customer_phone = customer.phone;
+        ride.customer_name = customer.name || "Customer";
+      }
+    }
+
+    // Attach driver info if customer is calling
+    if (ride.driver_id && role !== "driver") {
+      const { data: driverInfo } = await supabaseAdmin
+        .from("drivers")
+        .select("name, phone, rating, vehicles!vehicles_driver_id_fkey(type, plate, model)")
+        .eq("id", ride.driver_id)
+        .single();
+
+      if (driverInfo) {
+        const v = Array.isArray(driverInfo.vehicles) ? driverInfo.vehicles[0] : driverInfo.vehicles;
+        ride.driver_name = driverInfo.name || "Driver";
+        ride.driver_phone = driverInfo.phone;
+        ride.driver_rating = driverInfo.rating;
+        ride.vehicle_type = v?.type;
+        ride.vehicle_plate = v?.plate;
+        ride.vehicle_model = v?.model;
+
+        const { data: profileDoc } = await supabaseAdmin
+          .from("driver_documents")
+          .select("storage_path")
+          .eq("driver_id", ride.driver_id)
+          .eq("doc_type", "profile_photo")
+          .maybeSingle();
+
+        if (profileDoc?.storage_path) {
+          const { data: signed } = await supabaseAdmin.storage
+            .from("documents")
+            .createSignedUrl(profileDoc.storage_path, 3600);
+          if (signed?.signedUrl) {
+            ride.driver_photo = signed.signedUrl;
+            ride.driver_avatar = signed.signedUrl;
+          }
+        }
+      }
+    }
+
+    return reply.send({ active: true, ride });
+  });
+
   // GET /rides/:id — Get ride details
   app.get("/rides/:id", { preHandler: [authGuard] }, async (request, reply) => {
     const { id } = request.params as { id: string };
