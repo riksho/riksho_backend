@@ -210,6 +210,24 @@ export async function ridesRoutes(app: FastifyInstance) {
         ride.vehicle_type = v?.type;
         ride.vehicle_plate = v?.plate;
         ride.vehicle_model = v?.model;
+
+        // Fetch driver profile photo from driver_documents
+        const { data: profileDoc } = await supabaseAdmin
+          .from("driver_documents")
+          .select("storage_path")
+          .eq("driver_id", ride.driver_id)
+          .eq("doc_type", "profile_photo")
+          .maybeSingle();
+
+        if (profileDoc?.storage_path) {
+          const { data: signed } = await supabaseAdmin.storage
+            .from("documents")
+            .createSignedUrl(profileDoc.storage_path, 3600);
+          if (signed?.signedUrl) {
+            ride.driver_photo = signed.signedUrl;
+            ride.driver_avatar = signed.signedUrl;
+          }
+        }
       }
     }
 
@@ -904,11 +922,31 @@ export async function ridesRoutes(app: FastifyInstance) {
       vModel = veh?.model;
     }
 
+    // Fetch driver profile photo for accept broadcast
+    const { data: profileDoc } = await supabaseAdmin
+      .from("driver_documents")
+      .select("storage_path")
+      .eq("driver_id", winningBid.driver_id)
+      .eq("doc_type", "profile_photo")
+      .maybeSingle();
+
+    let driverPhoto: string | null = null;
+    if (profileDoc?.storage_path) {
+      const { data: signed } = await supabaseAdmin.storage
+        .from("documents")
+        .createSignedUrl(profileDoc.storage_path, 3600);
+      if (signed?.signedUrl) {
+        driverPhoto = signed.signedUrl;
+      }
+    }
+
     const acceptPayload = {
       driver_id: winningBid.driver_id,
       driver_name: driverInfo?.name || "Driver",
       driver_phone: driverInfo?.phone,
       driver_rating: driverInfo?.rating,
+      driver_photo: driverPhoto,
+      driver_avatar: driverPhoto,
       vehicle_type: vType,
       vehicle_plate: vPlate,
       vehicle_model: vModel,
