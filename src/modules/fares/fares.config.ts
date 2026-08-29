@@ -31,6 +31,13 @@ export const FARE_CONFIG = {
     minimum_fare: 40,
     surge_multiplier: 1.0,
   },
+  cargo: {
+    base_fare: 150,
+    per_km: 25,
+    per_min: 3,
+    minimum_fare: 250,
+    surge_multiplier: 1.0,
+  },
   tempo: {
     base_fare: 150,
     per_km: 25,

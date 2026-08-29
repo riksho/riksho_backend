@@ -140,6 +140,7 @@ export async function ridesRoutes(app: FastifyInstance) {
       auto: calculateFare("auto", route.distance, route.duration),
       e_rickshaw: calculateFare("e_rickshaw", route.distance, route.duration),
       car: calculateFare("car", route.distance, route.duration),
+      cargo: calculateFare("cargo", route.distance, route.duration),
       tempo: calculateFare("tempo", route.distance, route.duration),
       mini_truck: calculateFare("mini_truck", route.distance, route.duration),
       truck: calculateFare("truck", route.distance, route.duration),
