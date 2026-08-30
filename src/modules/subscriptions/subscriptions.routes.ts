@@ -25,68 +25,324 @@ const TestActivateSchema = z.object({
   duration_hours: z.number().int().positive().optional(),
 });
 
-const DEFAULT_FALLBACK_PLANS = [
-  {
-    id: "11111111-1111-1111-1111-111111111111",
-    name: "5 Hours Pass",
-    duration_hours: 5,
-    original_price: 5000,
-    price: 3900,
-    badge: "trial",
-    is_active: true,
-    sort_order: 1,
-  },
-  {
-    id: "22222222-2222-2222-2222-222222222222",
-    name: "8 Hours Pass",
-    duration_hours: 8,
-    original_price: 8000,
-    price: 5900,
-    badge: null,
-    is_active: true,
-    sort_order: 2,
-  },
-  {
-    id: "33333333-3333-3333-3333-333333333333",
-    name: "12 Hours Pass",
-    duration_hours: 12,
-    original_price: 10000,
-    price: 7900,
-    badge: "best_value",
-    is_active: true,
-    sort_order: 3,
-  },
-  {
-    id: "44444444-4444-4444-4444-444444444444",
-    name: "24 Hours Pass",
-    duration_hours: 24,
-    original_price: 16000,
-    price: 12900,
-    badge: "day_pass",
-    is_active: true,
-    sort_order: 4,
-  },
-];
+export const DEFAULT_VEHICLE_FALLBACK_PLANS: Record<string, any[]> = {
+  auto: [
+    {
+      id: "10000000-0000-0000-0000-000000000001",
+      name: "Auto 24h Daily Pass",
+      vehicle_type: "auto",
+      duration_hours: 24,
+      original_price: 2000,
+      price: 1500,
+      badge: "popular",
+      discount_label: "25% OFF",
+      description: "40% cheaper than Namma Yatri (₹25/day)",
+      max_rides: null,
+      is_milestone_plan: false,
+      milestone_threshold: null,
+      is_active: true,
+      sort_order: 1,
+    },
+    {
+      id: "10000000-0000-0000-0000-000000000002",
+      name: "Auto 7-Day Weekly Pass",
+      vehicle_type: "auto",
+      duration_hours: 168,
+      original_price: 14000,
+      price: 7900,
+      badge: "best_value",
+      discount_label: "44% OFF",
+      description: "~₹11.28/day (Saves ₹26 vs 7 daily passes)",
+      max_rides: null,
+      is_milestone_plan: false,
+      milestone_threshold: null,
+      is_active: true,
+      sort_order: 2,
+    },
+    {
+      id: "10000000-0000-0000-0000-000000000003",
+      name: "Auto 3-Day Saver Pack",
+      vehicle_type: "auto",
+      duration_hours: 72,
+      original_price: 3500,
+      price: 2000,
+      badge: "saver_pack",
+      discount_label: "43% OFF",
+      description: "Ideal for part-time / morning shift autos (12 rides)",
+      max_rides: 12,
+      is_milestone_plan: false,
+      milestone_threshold: null,
+      is_active: true,
+      sort_order: 3,
+    },
+  ],
+  e_rickshaw: [
+    {
+      id: "20000000-0000-0000-0000-000000000001",
+      name: "Toto 24h Daily Pass",
+      vehicle_type: "e_rickshaw",
+      duration_hours: 24,
+      original_price: 1500,
+      price: 1000,
+      badge: "popular",
+      discount_label: "33% OFF",
+      description: "Most affordable daily pass for green drivers",
+      max_rides: null,
+      is_milestone_plan: false,
+      milestone_threshold: null,
+      is_active: true,
+      sort_order: 1,
+    },
+    {
+      id: "20000000-0000-0000-0000-000000000002",
+      name: "Toto 7-Day Weekly Pass",
+      vehicle_type: "e_rickshaw",
+      duration_hours: 168,
+      original_price: 8000,
+      price: 4500,
+      badge: "best_value",
+      discount_label: "44% OFF",
+      description: "~₹6.42/day unlimited hyperlocal earnings",
+      max_rides: null,
+      is_milestone_plan: false,
+      milestone_threshold: null,
+      is_active: true,
+      sort_order: 2,
+    },
+    {
+      id: "20000000-0000-0000-0000-000000000003",
+      name: "Toto 3-Day Saver Pack",
+      vehicle_type: "e_rickshaw",
+      duration_hours: 72,
+      original_price: 3000,
+      price: 1500,
+      badge: "saver_pack",
+      discount_label: "50% OFF",
+      description: "₹1 per trip flat — maximum flexibility (15 rides)",
+      max_rides: 15,
+      is_milestone_plan: false,
+      milestone_threshold: null,
+      is_active: true,
+      sort_order: 3,
+    },
+  ],
+  bike: [
+    {
+      id: "30000000-0000-0000-0000-000000000001",
+      name: "Bike 24h Daily Pass",
+      vehicle_type: "bike",
+      duration_hours: 24,
+      original_price: 1500,
+      price: 1000,
+      badge: "popular",
+      discount_label: "33% OFF",
+      description: "Half price of Rapido Captain (₹20/day)",
+      max_rides: null,
+      is_milestone_plan: false,
+      milestone_threshold: null,
+      is_active: true,
+      sort_order: 1,
+    },
+    {
+      id: "30000000-0000-0000-0000-000000000002",
+      name: "Bike 7-Day Weekly Pass",
+      vehicle_type: "bike",
+      duration_hours: 168,
+      original_price: 9000,
+      price: 4900,
+      badge: "best_value",
+      discount_label: "46% OFF",
+      description: "~₹7.00/day unlimited rides",
+      max_rides: null,
+      is_milestone_plan: false,
+      milestone_threshold: null,
+      is_active: true,
+      sort_order: 2,
+    },
+    {
+      id: "30000000-0000-0000-0000-000000000003",
+      name: "Bike 10 Rides Lite Pack",
+      vehicle_type: "bike",
+      duration_hours: 72,
+      original_price: 2500,
+      price: 1900,
+      badge: "saver_pack",
+      discount_label: "24% OFF",
+      description: "Perfect for student / gig riders (10 rides)",
+      max_rides: 10,
+      is_milestone_plan: false,
+      milestone_threshold: null,
+      is_active: true,
+      sort_order: 3,
+    },
+    {
+      id: "30000000-0000-0000-0000-000000000004",
+      name: "Bike 30 Rides Power Pack",
+      vehicle_type: "bike",
+      duration_hours: 120,
+      original_price: 3500,
+      price: 2500,
+      badge: "power_pack",
+      discount_label: "28% OFF",
+      description: "Peak rush-hour warriors (30 rides)",
+      max_rides: 30,
+      is_milestone_plan: false,
+      milestone_threshold: null,
+      is_active: true,
+      sort_order: 4,
+    },
+  ],
+  cab: [
+    {
+      id: "40000000-0000-0000-0000-000000000001",
+      name: "Cab Monthly Milestone Pass",
+      vehicle_type: "cab",
+      duration_hours: 720,
+      original_price: 50000,
+      price: 44900,
+      badge: "best_value",
+      discount_label: "100% FREE UPFRONT",
+      description: "Free access until ₹12,000 earned, then ₹449 flat SaaS pass",
+      max_rides: null,
+      is_milestone_plan: true,
+      milestone_threshold: 12000.0,
+      is_active: true,
+      sort_order: 1,
+    },
+    {
+      id: "40000000-0000-0000-0000-000000000002",
+      name: "Cab 7-Day Weekly Flex",
+      vehicle_type: "cab",
+      duration_hours: 168,
+      original_price: 15000,
+      price: 11900,
+      badge: "weekly_flex",
+      discount_label: "21% OFF",
+      description: "Flexible weekly pass without monthly lock-in",
+      max_rides: null,
+      is_milestone_plan: false,
+      milestone_threshold: null,
+      is_active: true,
+      sort_order: 2,
+    },
+    {
+      id: "40000000-0000-0000-0000-000000000003",
+      name: "Cab 24h Daily Flex Pass",
+      vehicle_type: "cab",
+      duration_hours: 24,
+      original_price: 2500,
+      price: 1900,
+      badge: "daily_flex",
+      discount_label: "24% OFF",
+      description: "For occasional weekend cab drivers",
+      max_rides: null,
+      is_milestone_plan: false,
+      milestone_threshold: null,
+      is_active: true,
+      sort_order: 3,
+    },
+  ],
+  cargo: [
+    {
+      id: "50000000-0000-0000-0000-000000000001",
+      name: "Cargo 24h Daily Pass",
+      vehicle_type: "cargo",
+      duration_hours: 24,
+      original_price: 2500,
+      price: 1500,
+      badge: "popular",
+      discount_label: "40% OFF",
+      description: "Unlimited intra-city deliveries for 24 hours",
+      max_rides: null,
+      is_milestone_plan: false,
+      milestone_threshold: null,
+      is_active: true,
+      sort_order: 1,
+    },
+    {
+      id: "50000000-0000-0000-0000-000000000002",
+      name: "Cargo 7-Day Weekly Pass",
+      vehicle_type: "cargo",
+      duration_hours: 168,
+      original_price: 15000,
+      price: 8900,
+      badge: "best_value",
+      discount_label: "41% OFF",
+      description: "High-volume commercial deliveries pass",
+      max_rides: null,
+      is_milestone_plan: false,
+      milestone_threshold: null,
+      is_active: true,
+      sort_order: 2,
+    },
+    {
+      id: "50000000-0000-0000-0000-000000000003",
+      name: "Cargo 15 Trips Saver Pack",
+      vehicle_type: "cargo",
+      duration_hours: 72,
+      original_price: 4000,
+      price: 2500,
+      badge: "saver_pack",
+      discount_label: "38% OFF",
+      description: "On-demand freight hauling saver pack (15 trips)",
+      max_rides: 15,
+      is_milestone_plan: false,
+      milestone_threshold: null,
+      is_active: true,
+      sort_order: 3,
+    },
+  ],
+};
+
+export const ALL_FALLBACK_PLANS = Object.values(DEFAULT_VEHICLE_FALLBACK_PLANS).flat();
+
+export function normalizeVehicleType(type?: string | null): string {
+  if (!type) return "auto";
+  const t = type.toLowerCase().trim();
+  if (t === "toto" || t === "e_rickshaw" || t === "erickshaw") return "e_rickshaw";
+  if (t === "bike" || t === "motorcycle" || t === "scooter") return "bike";
+  if (t === "car" || t === "cab" || t === "sedan" || t === "hatchback") return "cab";
+  if (t === "cargo" || t === "tempo" || t === "mini_truck" || t === "truck") return "cargo";
+  return "auto";
+}
+
+export function findFallbackPlanById(planId: string): any | undefined {
+  return ALL_FALLBACK_PLANS.find((p) => p.id === planId);
+}
 
 export async function subscriptionsRoutes(app: FastifyInstance) {
   /**
-   * GET /subscriptions/plans — List all active subscription recharge plans
+   * GET /subscriptions/plans — List active subscription recharge plans filtered by vehicle type
    */
-  app.get("/subscriptions/plans", async (_request, reply) => {
-    const { data: plans, error } = await supabaseAdmin
+  app.get("/subscriptions/plans", async (request, reply) => {
+    const query = request.query as { vehicle_type?: string };
+    const normType = query.vehicle_type ? normalizeVehicleType(query.vehicle_type) : null;
+
+    let dbQuery = supabaseAdmin
       .from("subscription_plans")
       .select("*")
-      .eq("is_active", true)
-      .order("sort_order", { ascending: true });
+      .eq("is_active", true);
 
-    if (error) {
-      logger.error({ error }, "Failed to fetch subscription plans");
-      return reply.status(500).send({ error: "Failed to fetch plans" });
+    if (normType) {
+      dbQuery = dbQuery.in("vehicle_type", [normType, "all"]);
     }
 
-    // Default fallback plans if table is not yet seeded
+    const { data: plans, error } = await dbQuery.order("sort_order", { ascending: true });
+
+    if (error) {
+      logger.error({ error, vehicle_type: normType }, "Failed to fetch subscription plans");
+      const fallback = normType
+        ? DEFAULT_VEHICLE_FALLBACK_PLANS[normType] || DEFAULT_VEHICLE_FALLBACK_PLANS.auto
+        : DEFAULT_VEHICLE_FALLBACK_PLANS.auto;
+      return reply.send({ plans: fallback, razorpay_key_id: RAZORPAY_KEY_ID });
+    }
+
+    // Default fallback plans if table is not yet seeded for this vehicle type
     if (!plans || plans.length === 0) {
-      return reply.send({ plans: DEFAULT_FALLBACK_PLANS, razorpay_key_id: RAZORPAY_KEY_ID });
+      const fallback = normType
+        ? DEFAULT_VEHICLE_FALLBACK_PLANS[normType] || DEFAULT_VEHICLE_FALLBACK_PLANS.auto
+        : DEFAULT_VEHICLE_FALLBACK_PLANS.auto;
+      return reply.send({ plans: fallback, razorpay_key_id: RAZORPAY_KEY_ID });
     }
 
     return reply.send({ plans, razorpay_key_id: RAZORPAY_KEY_ID });
@@ -156,15 +412,28 @@ export async function subscriptionsRoutes(app: FastifyInstance) {
       .eq("id", plan_id)
       .maybeSingle();
 
-    const fallbackMatch = DEFAULT_FALLBACK_PLANS.find((p) => p.id === plan_id);
+    const fallbackMatch = findFallbackPlanById(plan_id);
     let planName = fallbackMatch?.name || "Driver Pass";
     let durationHours = fallbackMatch?.duration_hours || 24;
-    let pricePaise = fallbackMatch?.price || 3900;
+    let pricePaise = fallbackMatch?.price || 1500;
+    let vehicleType = fallbackMatch?.vehicle_type || "all";
+    let maxRides = fallbackMatch?.max_rides ?? null;
+    let isMilestonePlan = fallbackMatch?.is_milestone_plan ?? false;
+    let milestoneThreshold = fallbackMatch?.milestone_threshold ?? null;
 
     if (!planErr && plan) {
       planName = plan.name;
       durationHours = plan.duration_hours;
       pricePaise = plan.price;
+      vehicleType = plan.vehicle_type || "all";
+      maxRides = plan.max_rides ?? null;
+      isMilestonePlan = plan.is_milestone_plan ?? false;
+      milestoneThreshold = plan.milestone_threshold ?? null;
+    }
+
+    // If milestone plan with free upfront (e.g. Cab ₹12k milestone)
+    if (isMilestonePlan && pricePaise === 0) {
+      pricePaise = 0;
     }
 
     // Check promo balance
@@ -184,7 +453,7 @@ export async function subscriptionsRoutes(app: FastifyInstance) {
 
     const payablePaise = Math.max(0, pricePaise - discountPaise);
 
-    // If 100% covered by promo balance / 0 payable -> activate immediately without Razorpay!
+    // If 100% covered by promo balance / 0 payable (or free upfront milestone) -> activate immediately without Razorpay!
     if (payablePaise <= 0) {
       const { data: existingActive } = await supabaseAdmin
         .from("driver_subscriptions")
@@ -229,9 +498,13 @@ export async function subscriptionsRoutes(app: FastifyInstance) {
           plan_id: plan ? plan.id : (fallbackMatch ? fallbackMatch.id : null),
           plan_name: planName,
           duration_hours: durationHours,
+          vehicle_type: vehicleType,
+          max_rides: maxRides,
+          is_milestone_plan: isMilestonePlan,
+          milestone_threshold: milestoneThreshold,
           amount_paid: 0,
-          razorpay_order_id: `promo_covered_${Date.now()}`,
-          razorpay_payment_id: `promo_pay_${Date.now()}`,
+          razorpay_order_id: isMilestonePlan ? `milestone_free_${Date.now()}` : `promo_covered_${Date.now()}`,
+          razorpay_payment_id: isMilestonePlan ? `milestone_free_${Date.now()}` : `promo_pay_${Date.now()}`,
           status: "active",
           started_at: startTime.toISOString(),
           expires_at: expiresTime.toISOString(),
@@ -242,7 +515,9 @@ export async function subscriptionsRoutes(app: FastifyInstance) {
       return reply.status(201).send({
         success: true,
         free_activated: true,
-        message: `Pass activated using ₹${usedRs.toFixed(0)} promo balance!`,
+        message: isMilestonePlan
+          ? `Milestone pass activated with ₹0 upfront! Free up to ₹${milestoneThreshold?.toLocaleString() || "12,000"}.`
+          : `Pass activated using ₹${usedRs.toFixed(0)} promo balance!`,
         subscription: sub,
       });
     }
@@ -268,6 +543,10 @@ export async function subscriptionsRoutes(app: FastifyInstance) {
           plan_id: plan ? plan.id : (fallbackMatch ? fallbackMatch.id : null),
           plan_name: planName,
           duration_hours: durationHours,
+          vehicle_type: vehicleType,
+          max_rides: maxRides,
+          is_milestone_plan: isMilestonePlan,
+          milestone_threshold: milestoneThreshold,
           amount_paid: payablePaise,
           razorpay_order_id: order.id,
           status: "pending",
@@ -337,7 +616,7 @@ export async function subscriptionsRoutes(app: FastifyInstance) {
       if (planRow) {
         planPrice = planRow.price;
       } else {
-        const fb = DEFAULT_FALLBACK_PLANS.find((p) => p.id === sub.plan_id);
+        const fb = findFallbackPlanById(sub.plan_id);
         if (fb) planPrice = fb.price;
       }
 
