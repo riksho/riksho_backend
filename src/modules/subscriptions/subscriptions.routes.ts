@@ -316,32 +316,24 @@ export async function subscriptionsRoutes(app: FastifyInstance) {
    */
   app.get("/subscriptions/plans", async (request, reply) => {
     const query = request.query as { vehicle_type?: string };
-    const normType = query.vehicle_type ? normalizeVehicleType(query.vehicle_type) : null;
+    const normType = query.vehicle_type ? normalizeVehicleType(query.vehicle_type) : "auto";
 
-    let dbQuery = supabaseAdmin
+    const { data: plans, error } = await supabaseAdmin
       .from("subscription_plans")
       .select("*")
-      .eq("is_active", true);
-
-    if (normType) {
-      dbQuery = dbQuery.in("vehicle_type", [normType, "all"]);
-    }
-
-    const { data: plans, error } = await dbQuery.order("sort_order", { ascending: true });
+      .eq("is_active", true)
+      .eq("vehicle_type", normType)
+      .order("sort_order", { ascending: true });
 
     if (error) {
       logger.error({ error, vehicle_type: normType }, "Failed to fetch subscription plans");
-      const fallback = normType
-        ? DEFAULT_VEHICLE_FALLBACK_PLANS[normType] || DEFAULT_VEHICLE_FALLBACK_PLANS.auto
-        : DEFAULT_VEHICLE_FALLBACK_PLANS.auto;
+      const fallback = DEFAULT_VEHICLE_FALLBACK_PLANS[normType] || DEFAULT_VEHICLE_FALLBACK_PLANS.auto;
       return reply.send({ plans: fallback, razorpay_key_id: RAZORPAY_KEY_ID });
     }
 
     // Default fallback plans if table is not yet seeded for this vehicle type
     if (!plans || plans.length === 0) {
-      const fallback = normType
-        ? DEFAULT_VEHICLE_FALLBACK_PLANS[normType] || DEFAULT_VEHICLE_FALLBACK_PLANS.auto
-        : DEFAULT_VEHICLE_FALLBACK_PLANS.auto;
+      const fallback = DEFAULT_VEHICLE_FALLBACK_PLANS[normType] || DEFAULT_VEHICLE_FALLBACK_PLANS.auto;
       return reply.send({ plans: fallback, razorpay_key_id: RAZORPAY_KEY_ID });
     }
 

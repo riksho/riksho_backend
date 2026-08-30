@@ -21,13 +21,29 @@ ADD COLUMN IF NOT EXISTS rides_used INT DEFAULT 0;
 -- 3. Create indexes for performance
 CREATE INDEX IF NOT EXISTS idx_subscription_plans_vehicle_active ON public.subscription_plans (vehicle_type, is_active, sort_order);
 
--- 4. Clean up old generic seed plans if needed
-DELETE FROM public.subscription_plans WHERE id IN (
-  '11111111-1111-1111-1111-111111111111',
-  '22222222-2222-2222-2222-222222222222',
-  '33333333-3333-3333-3333-333333333333',
-  '44444444-4444-4444-4444-444444444444'
-);
+-- 4. Clean up ALL previous / old generic plans
+DELETE FROM public.subscription_plans 
+WHERE name IN ('5 Hours Trial', '8 Hours Shift', '24 Hours Pass', '7 Days Pass', '5 Hours Pass', '8 Hours Pass', '12 Hours Pass')
+   OR vehicle_type = 'all'
+   OR vehicle_type IS NULL
+   OR id NOT IN (
+     '10000000-0000-0000-0000-000000000001',
+     '10000000-0000-0000-0000-000000000002',
+     '10000000-0000-0000-0000-000000000003',
+     '20000000-0000-0000-0000-000000000001',
+     '20000000-0000-0000-0000-000000000002',
+     '20000000-0000-0000-0000-000000000003',
+     '30000000-0000-0000-0000-000000000001',
+     '30000000-0000-0000-0000-000000000002',
+     '30000000-0000-0000-0000-000000000003',
+     '30000000-0000-0000-0000-000000000004',
+     '40000000-0000-0000-0000-000000000001',
+     '40000000-0000-0000-0000-000000000002',
+     '40000000-0000-0000-0000-000000000003',
+     '50000000-0000-0000-0000-000000000001',
+     '50000000-0000-0000-0000-000000000002',
+     '50000000-0000-0000-0000-000000000003'
+   );
 
 -- 5. Insert New Vehicle-Specific Plans
 INSERT INTO public.subscription_plans (
