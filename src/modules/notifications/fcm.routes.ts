@@ -193,4 +193,22 @@ export async function fcmRoutes(app: FastifyInstance) {
 
     return reply.send({ success: true });
   });
+
+  /**
+   * POST /push/fcm-unregister — Remove a device's FCM token on logout
+   */
+  app.post("/push/fcm-unregister", { preHandler: [authGuard] }, async (request, reply) => {
+    const userId = request.user!.id;
+    const { token } = (request.body || {}) as { token?: string };
+
+    if (token) {
+      await supabaseAdmin
+        .from("push_tokens")
+        .delete()
+        .eq("user_id", userId)
+        .eq("token", token);
+    }
+
+    return reply.send({ success: true });
+  });
 }
