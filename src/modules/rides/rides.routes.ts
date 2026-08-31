@@ -185,6 +185,24 @@ export async function ridesRoutes(app: FastifyInstance) {
 
     const ride = rides[0];
 
+    // Auto-expire stale rides from previous days / abandoned sessions
+    const createdAtTime = new Date(ride.created_at).getTime();
+    const nowTime = Date.now();
+    const ageMinutes = (nowTime - createdAtTime) / (1000 * 60);
+
+    const isStale =
+      (ride.status === "requested" && ageMinutes > 15) ||
+      (["accepted", "arriving", "in_progress"].includes(ride.status) && ageMinutes > 240);
+
+    if (isStale) {
+      await supabaseAdmin
+        .from("rides")
+        .update({ status: "cancelled", cancellation_reason: "Stale ride auto-expired" })
+        .eq("id", ride.id);
+
+      return reply.send({ active: false, ride: null });
+    }
+
     // Mask OTP from driver
     if (ride.customer_id !== userId) {
       delete ride.ride_otp;
