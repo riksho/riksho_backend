@@ -110,8 +110,9 @@ export async function adminRoutes(app: FastifyInstance) {
     
     if (status === "approved") {
       await sendPush([id], {
-        title: "Profile Approved \u2705",
-        body: "Congratulations! Your driver profile has been verified. You can now go online and accept rides."
+        title: "Profile Approved",
+        body: "Your Riksho Buddy account is approved. Go online to start earning!",
+        data: { type: "driver_approved", status: "approved" },
       }).catch(err => {
         logger.error({ id, err }, "Failed to send approval push notification");
       });

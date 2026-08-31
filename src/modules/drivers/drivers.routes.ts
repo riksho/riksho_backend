@@ -4,6 +4,8 @@ import { requireRole } from "../../common/roles.guard.js";
 import { supabaseAdmin } from "../../config/supabase.js";
 import { DriverLocationSchema, DriverRegisterSchema, DriverDocumentSchema } from "../../common/schemas.js";
 import { withSignedUrls } from "../../common/document-urls.js";
+import { logger } from "../../common/logger.js";
+import { sendDataMessage } from "../notifications/fcm.service.js";
 
 export async function driversRoutes(app: FastifyInstance) {
   // POST /drivers/online — Go online (drivers only, subscription gated)
@@ -423,6 +425,81 @@ export async function driversRoutes(app: FastifyInstance) {
     }
 
     return reply.send(data || []);
+  });
+
+  // GET /drivers/sessions/active — Check other active device sessions for this driver
+  app.get("/drivers/sessions/active", { preHandler: [authGuard] }, async (request, reply) => {
+    const driverId = request.user!.id;
+    const { current_token } = (request.query || {}) as { current_token?: string };
+
+    const { data: tokens, error } = await supabaseAdmin
+      .from("push_tokens")
+      .select("token, platform, updated_at")
+      .eq("user_id", driverId);
+
+    if (error) {
+      logger.error({ driverId, err: error.message }, "Failed to fetch active driver sessions");
+      return reply.status(500).send({ error: "Failed to fetch active sessions" });
+    }
+
+    const allTokens = tokens || [];
+    const otherTokens = current_token ? allTokens.filter((t) => t.token !== current_token) : allTokens;
+
+    return reply.send({
+      total_devices: allTokens.length,
+      other_devices_count: otherTokens.length,
+      has_other_devices: otherTokens.length > 0,
+    });
+  });
+
+  // POST /drivers/sessions/terminate-others — Force-logout other active devices via FCM data push
+  app.post("/drivers/sessions/terminate-others", { preHandler: [authGuard] }, async (request, reply) => {
+    const driverId = request.user!.id;
+    const { current_token } = (request.body || {}) as { current_token?: string };
+
+    // 1. Find other active push tokens for this driver
+    let query = supabaseAdmin
+      .from("push_tokens")
+      .select("token")
+      .eq("user_id", driverId);
+
+    if (current_token) {
+      query = query.neq("token", current_token);
+    }
+
+    const { data: otherTokens, error } = await query;
+    if (error) {
+      logger.error({ driverId, err: error.message }, "Failed to query active sessions to terminate");
+      return reply.status(500).send({ error: "Failed to query active sessions" });
+    }
+
+    const tokensToTerminate = (otherTokens || []).map((t) => t.token).filter(Boolean);
+
+    // 2. Send high-priority Data-Only FCM message to FORCE_LOGOUT other devices
+    if (tokensToTerminate.length > 0) {
+      try {
+        await sendDataMessage(tokensToTerminate, {
+          type: "FORCE_LOGOUT",
+          reason: "session_taken_over",
+          message: "Your Riksho Buddy account was logged into from another device.",
+        });
+        logger.info({ driverId, count: tokensToTerminate.length }, "FORCE_LOGOUT data push dispatched to other devices");
+      } catch (e: any) {
+        logger.error({ driverId, err: e.message }, "Error sending force logout messages");
+      }
+
+      // 3. Remove other tokens from push_tokens
+      await supabaseAdmin
+        .from("push_tokens")
+        .delete()
+        .eq("user_id", driverId)
+        .in("token", tokensToTerminate);
+    }
+
+    return reply.send({
+      success: true,
+      terminated_count: tokensToTerminate.length,
+    });
   });
 }
 
