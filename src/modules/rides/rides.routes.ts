@@ -197,7 +197,11 @@ export async function ridesRoutes(app: FastifyInstance) {
     if (isStale) {
       await supabaseAdmin
         .from("rides")
-        .update({ status: "cancelled", cancellation_reason: "Stale ride auto-expired" })
+        .update({ 
+          status: "cancelled", 
+          cancel_reason: "Stale ride auto-expired",
+          cancelled_at: new Date().toISOString()
+        })
         .eq("id", ride.id);
 
       return reply.send({ active: false, ride: null });
