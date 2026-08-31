@@ -20,6 +20,7 @@ const CreatePromoSchema = z.object({
   plan_name: z.string().max(100).nullable().optional(),
   max_redemptions: z.number().int().positive().nullable().optional(),
   expires_at: z.string().datetime().nullable().optional(),
+  usage_validity_hours: z.number().int().positive().nullable().optional(),
   description: z.string().max(255).optional(),
   is_active: z.boolean().optional().default(true),
 });
@@ -32,6 +33,7 @@ const UpdatePromoSchema = z.object({
   plan_name: z.string().max(100).nullable().optional(),
   max_redemptions: z.number().int().positive().nullable().optional(),
   expires_at: z.string().datetime().nullable().optional(),
+  usage_validity_hours: z.number().int().positive().nullable().optional(),
   description: z.string().max(255).optional(),
 });
 
@@ -686,6 +688,7 @@ export async function promosRoutes(app: FastifyInstance) {
       coins_amount: z.number().int().positive("Coins amount must be greater than 0"),
       max_redemptions: z.number().int().positive().nullable().optional(),
       expires_at: z.string().datetime().nullable().optional(),
+      usage_validity_hours: z.number().int().positive().nullable().optional(),
       description: z.string().max(255).optional(),
       is_active: z.boolean().optional().default(true),
     }).safeParse(request.body);
@@ -696,7 +699,7 @@ export async function promosRoutes(app: FastifyInstance) {
       });
     }
 
-    const { code, coins_amount, max_redemptions, expires_at, description, is_active } = parsed.data;
+    const { code, coins_amount, max_redemptions, expires_at, usage_validity_hours, description, is_active } = parsed.data;
     const upperCode = code.toUpperCase();
 
     // Check if code already exists
@@ -715,6 +718,7 @@ export async function promosRoutes(app: FastifyInstance) {
       coins_amount,
       max_redemptions: max_redemptions || null,
       expires_at: expires_at || null,
+      usage_validity_hours: usage_validity_hours || null,
       description: description?.trim() || null,
       is_active: is_active ?? true,
       is_deleted: false,
