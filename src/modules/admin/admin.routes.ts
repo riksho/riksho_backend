@@ -51,7 +51,18 @@ export async function adminRoutes(app: FastifyInstance) {
     
     const { data, error } = await query;
     if (error) throw error;
-    return data ?? [];
+
+    const normalized = (data ?? []).map((driver: any) => {
+      const v = driver.vehicles;
+      const vehicleList = Array.isArray(v) ? v : v ? [v] : [];
+      return {
+        ...driver,
+        vehicles: vehicleList,
+        vehicle: vehicleList[0] || null,
+      };
+    });
+
+    return normalized;
   });
 
   app.get("/admin/incomplete-drivers", guard, async () => {
@@ -82,7 +93,19 @@ export async function adminRoutes(app: FastifyInstance) {
       
     if (error || !data) return reply.status(404).send({ error: "Driver not found" });
 
-    return { ...data, driver_documents: await withSignedUrls(data.driver_documents) };
+    const rawVehicles = data.vehicles;
+    const vehiclesList = Array.isArray(rawVehicles)
+      ? rawVehicles
+      : rawVehicles
+      ? [rawVehicles]
+      : [];
+
+    return {
+      ...data,
+      vehicles: vehiclesList,
+      vehicle: vehiclesList[0] || null,
+      driver_documents: await withSignedUrls(data.driver_documents),
+    };
   });
 
   const setStatus = async (id: string, verified: boolean, status: string, adminId: string, reason?: string) => {

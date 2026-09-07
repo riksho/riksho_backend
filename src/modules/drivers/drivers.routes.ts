@@ -152,10 +152,26 @@ export async function driversRoutes(app: FastifyInstance) {
       return reply.status(404).send({ error: "Driver profile not found" });
     }
 
+    const rawVehicles = data.vehicles;
+    const vehiclesList = Array.isArray(rawVehicles)
+      ? rawVehicles
+      : rawVehicles
+      ? [rawVehicles]
+      : [];
+
+    const activeVehicle =
+      vehiclesList.find((v: any) => v.id === data.active_vehicle_id) ||
+      vehiclesList[0] ||
+      null;
+
     // Sign document paths server-side — the bucket is private, so the app
     // cannot build a working URL itself (needed for the profile avatar).
     return reply.send({
       ...data,
+      vehicles: vehiclesList,
+      vehicle_type: activeVehicle?.type || null,
+      vehicle_model: activeVehicle?.model || null,
+      vehicle_plate: activeVehicle?.plate || null,
       driver_documents: await withSignedUrls(data.driver_documents),
     });
   });
@@ -383,21 +399,28 @@ export async function driversRoutes(app: FastifyInstance) {
   // PUT /drivers/profile — Edit driver profile
   app.put("/drivers/profile", { preHandler: [authGuard, requireRole("driver")] }, async (request, reply) => {
     const driverId = request.user!.id;
-    const { name, vehicle_model, vehicle_plate } = request.body as any;
+    const { name, vehicle_model, vehicle_plate, vehicle_type } = request.body as any;
 
-    const { error: driverError } = await supabaseAdmin
-      .from("drivers")
-      .update({ name })
-      .eq("id", driverId);
+    if (name && typeof name === "string") {
+      const { error: driverError } = await supabaseAdmin
+        .from("drivers")
+        .update({ name: name.trim() })
+        .eq("id", driverId);
 
-    if (driverError) {
-      return reply.status(500).send({ error: "Failed to update driver details" });
+      if (driverError) {
+        return reply.status(500).send({ error: "Failed to update driver details" });
+      }
     }
 
-    if (vehicle_model || vehicle_plate) {
+    if (vehicle_model || vehicle_plate || vehicle_type) {
+      const vehicleUpdates: Record<string, any> = {};
+      if (vehicle_model) vehicleUpdates.model = vehicle_model.trim();
+      if (vehicle_plate) vehicleUpdates.plate = vehicle_plate.trim().toUpperCase();
+      if (vehicle_type) vehicleUpdates.type = vehicle_type.trim().toLowerCase();
+
       const { error: vehicleError } = await supabaseAdmin
         .from("vehicles")
-        .update({ model: vehicle_model, plate: vehicle_plate })
+        .update(vehicleUpdates)
         .eq("driver_id", driverId);
 
       if (vehicleError) {
