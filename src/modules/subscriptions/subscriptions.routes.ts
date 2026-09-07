@@ -437,6 +437,8 @@ export function findFallbackPlanById(planId: string): any | undefined {
   return ALL_FALLBACK_PLANS.find((p) => p.id === planId);
 }
 
+const plansCache = new Map<string, { data: any; expiry: number }>();
+
 export async function subscriptionsRoutes(app: FastifyInstance) {
   /**
    * GET /subscriptions/plans — List active subscription recharge plans filtered by vehicle type
@@ -444,6 +446,11 @@ export async function subscriptionsRoutes(app: FastifyInstance) {
   app.get("/subscriptions/plans", async (request, reply) => {
     const query = request.query as { vehicle_type?: string };
     const normType = query.vehicle_type ? normalizeVehicleType(query.vehicle_type) : "auto";
+
+    const cached = plansCache.get(normType);
+    if (cached && Date.now() < cached.expiry) {
+      return reply.send(cached.data);
+    }
 
     const { data: plans, error } = await supabaseAdmin
       .from("subscription_plans")
@@ -455,16 +462,22 @@ export async function subscriptionsRoutes(app: FastifyInstance) {
     if (error) {
       logger.error({ error, vehicle_type: normType }, "Failed to fetch subscription plans");
       const fallback = DEFAULT_VEHICLE_FALLBACK_PLANS[normType] || DEFAULT_VEHICLE_FALLBACK_PLANS.auto;
-      return reply.send({ plans: fallback, razorpay_key_id: RAZORPAY_KEY_ID });
+      const res = { plans: fallback, razorpay_key_id: RAZORPAY_KEY_ID };
+      plansCache.set(normType, { data: res, expiry: Date.now() + 60000 });
+      return reply.send(res);
     }
 
     // Default fallback plans if table is not yet seeded for this vehicle type
     if (!plans || plans.length === 0) {
       const fallback = DEFAULT_VEHICLE_FALLBACK_PLANS[normType] || DEFAULT_VEHICLE_FALLBACK_PLANS.auto;
-      return reply.send({ plans: fallback, razorpay_key_id: RAZORPAY_KEY_ID });
+      const res = { plans: fallback, razorpay_key_id: RAZORPAY_KEY_ID };
+      plansCache.set(normType, { data: res, expiry: Date.now() + 60000 });
+      return reply.send(res);
     }
 
-    return reply.send({ plans, razorpay_key_id: RAZORPAY_KEY_ID });
+    const res = { plans, razorpay_key_id: RAZORPAY_KEY_ID };
+    plansCache.set(normType, { data: res, expiry: Date.now() + 60000 });
+    return reply.send(res);
   });
 
   /**
@@ -475,8 +488,8 @@ export async function subscriptionsRoutes(app: FastifyInstance) {
     const now = Date.now();
     const nowIso = new Date().toISOString();
 
-    // Batch expire all past active subscriptions for this driver
-    await supabaseAdmin
+    // Fire-and-forget: expire past active subscriptions in background without blocking
+    void supabaseAdmin
       .from("driver_subscriptions")
       .update({ status: "expired", updated_at: nowIso })
       .eq("driver_id", driverId)
@@ -951,8 +964,8 @@ export async function subscriptionsRoutes(app: FastifyInstance) {
     const now = Date.now();
     const nowIso = new Date().toISOString();
 
-    // Auto-expire all past active subscriptions for this driver in the database
-    await supabaseAdmin
+    // Fire-and-forget: expire past active subscriptions in background without blocking SELECT
+    void supabaseAdmin
       .from("driver_subscriptions")
       .update({ status: "expired", updated_at: nowIso })
       .eq("driver_id", driverId)
