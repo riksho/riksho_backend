@@ -38,7 +38,7 @@ export function generateUpiIntentUrl(options: {
   const note = (options.planName || "Riksho Recharge").replace(/[^a-zA-Z0-9 ]/g, "").slice(0, 30);
   const tr = options.orderId;
 
-  return `upi://pay?pa=${vpa}&pn=${encodeURIComponent(name)}&tr=${encodeURIComponent(tr)}&am=${amountRs}&cu=INR&tn=${encodeURIComponent(note)}`;
+  return `upi://pay?pa=${encodeURIComponent(vpa)}&pn=${encodeURIComponent(name)}&tr=${encodeURIComponent(tr)}&am=${amountRs}&cu=INR&tn=${encodeURIComponent(note)}`;
 }
 
 /**
