@@ -19,7 +19,7 @@ export const RAZORPAY_WEBHOOK_SECRET =
   process.env.RAZORPAY_WEBHOOK_SECRET ||
   "";
 
-export const RAZORPAY_MERCHANT_VPA = process.env.RAZORPAY_MERCHANT_VPA || "riksho@razorpay";
+export const RAZORPAY_MERCHANT_VPA = process.env.RAZORPAY_MERCHANT_VPA || "anga9763826.rzp@rxairtel";
 export const RAZORPAY_MERCHANT_NAME = process.env.RAZORPAY_MERCHANT_NAME || "RIKSHO";
 
 /**
