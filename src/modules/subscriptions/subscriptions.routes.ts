@@ -8,6 +8,7 @@ import {
   verifyRazorpaySignature,
   fetchRazorpayOrder,
   verifyRazorpayWebhookSignature,
+  generateUpiIntentUrl,
   RAZORPAY_KEY_ID,
 } from "../../config/razorpay.js";
 
@@ -704,11 +705,18 @@ export async function subscriptionsRoutes(app: FastifyInstance) {
         logger.error({ insertErr }, "Failed to record pending subscription");
       }
 
+      const upiIntentUrl = generateUpiIntentUrl({
+        orderId: order.id,
+        amountPaise: payablePaise,
+        planName: planName,
+      });
+
       return reply.status(201).send({
         order_id: order.id,
         amount: order.amount,
         currency: order.currency,
         razorpay_key_id: RAZORPAY_KEY_ID,
+        upi_intent_url: upiIntentUrl,
         subscription_id: sub?.id,
         plan_name: planName,
         discount_applied: discountPaise > 0,

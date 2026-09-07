@@ -19,6 +19,28 @@ export const RAZORPAY_WEBHOOK_SECRET =
   process.env.RAZORPAY_WEBHOOK_SECRET ||
   "";
 
+export const RAZORPAY_MERCHANT_VPA = process.env.RAZORPAY_MERCHANT_VPA || "riksho@razorpay";
+export const RAZORPAY_MERCHANT_NAME = process.env.RAZORPAY_MERCHANT_NAME || "RIKSHO";
+
+/**
+ * Constructs a standard NPCI UPI Intent URI for one-tap payments on Android
+ */
+export function generateUpiIntentUrl(options: {
+  vpa?: string;
+  merchantName?: string;
+  orderId: string;
+  amountPaise: number;
+  planName: string;
+}): string {
+  const vpa = options.vpa || RAZORPAY_MERCHANT_VPA;
+  const name = options.merchantName || RAZORPAY_MERCHANT_NAME;
+  const amountRs = (options.amountPaise / 100).toFixed(2);
+  const note = (options.planName || "Riksho Recharge").replace(/[^a-zA-Z0-9 ]/g, "").slice(0, 30);
+  const tr = options.orderId;
+
+  return `upi://pay?pa=${encodeURIComponent(vpa)}&pn=${encodeURIComponent(name)}&tr=${encodeURIComponent(tr)}&am=${amountRs}&cu=INR&tn=${encodeURIComponent(note)}`;
+}
+
 /**
  * Creates an order directly via Razorpay API v1
  */
