@@ -511,33 +511,32 @@ export async function subscriptionsRoutes(app: FastifyInstance) {
       return reply.status(500).send({ error: "Failed to fetch subscription" });
     }
 
-    // Auto-reconcile check: check for recent pending order (within 30 mins) to activate or stack
-    const thirtyMinsAgo = new Date(now - 30 * 60 * 1000).toISOString();
-    const { data: recentPending } = await supabaseAdmin
-      .from("driver_subscriptions")
-      .select("*")
-      .eq("driver_id", driverId)
-      .eq("status", "pending")
-      .gte("created_at", thirtyMinsAgo)
-      .order("created_at", { ascending: false })
-      .limit(1)
-      .maybeSingle();
+    // Auto-reconcile check: if no active subscription, check for recent pending order (within 30 mins)
+    if (!sub) {
+      const thirtyMinsAgo = new Date(now - 30 * 60 * 1000).toISOString();
+      const { data: recentPending } = await supabaseAdmin
+        .from("driver_subscriptions")
+        .select("*")
+        .eq("driver_id", driverId)
+        .eq("status", "pending")
+        .gte("created_at", thirtyMinsAgo)
+        .order("created_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
 
-    if (recentPending?.razorpay_order_id) {
-      try {
-        const rzpOrder = await fetchRazorpayOrder(recentPending.razorpay_order_id);
-        if (rzpOrder && (rzpOrder.status === "paid" || rzpOrder.amount_paid > 0)) {
-          const activated = await activateSubscriptionByOrder(
-            recentPending.razorpay_order_id,
-            rzpOrder.payment_id,
-            driverId
-          );
-          if (activated) {
-            sub = activated;
+      if (recentPending?.razorpay_order_id) {
+        try {
+          const rzpOrder = await fetchRazorpayOrder(recentPending.razorpay_order_id);
+          if (rzpOrder && (rzpOrder.status === "paid" || rzpOrder.amount_paid > 0)) {
+            sub = await activateSubscriptionByOrder(
+              recentPending.razorpay_order_id,
+              rzpOrder.payment_id,
+              driverId
+            );
           }
+        } catch (e: any) {
+          logger.warn({ err: e.message }, "Background order reconciliation check failed");
         }
-      } catch (e: any) {
-        logger.warn({ err: e.message }, "Background order reconciliation check failed");
       }
     }
 
