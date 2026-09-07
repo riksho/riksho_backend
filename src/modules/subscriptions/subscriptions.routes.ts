@@ -763,18 +763,17 @@ export async function subscriptionsRoutes(app: FastifyInstance) {
 
     if (!targetOrderId) {
       const thirtyMinsAgo = new Date(Date.now() - 30 * 60 * 1000).toISOString();
-      const { data: pendingSub } = await supabaseAdmin
+      const { data: recentSub } = await supabaseAdmin
         .from("driver_subscriptions")
-        .select("razorpay_order_id")
+        .select("razorpay_order_id, status")
         .eq("driver_id", driverId)
-        .eq("status", "pending")
         .gte("created_at", thirtyMinsAgo)
         .order("created_at", { ascending: false })
         .limit(1)
         .maybeSingle();
 
-      if (pendingSub?.razorpay_order_id) {
-        targetOrderId = pendingSub.razorpay_order_id;
+      if (recentSub?.razorpay_order_id) {
+        targetOrderId = recentSub.razorpay_order_id;
       }
     }
 
@@ -782,7 +781,7 @@ export async function subscriptionsRoutes(app: FastifyInstance) {
       return reply.send({
         checked: false,
         active: false,
-        message: "No recent pending order found to check.",
+        message: "No recent order found to check.",
       });
     }
 
