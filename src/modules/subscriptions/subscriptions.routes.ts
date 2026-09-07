@@ -758,85 +758,100 @@ export async function subscriptionsRoutes(app: FastifyInstance) {
     const driverId = request.user!.id;
     const body = (request.body as any) || {};
     const { order_id, razorpay_order_id } = CheckOrderStatusSchema.parse(body);
-
     let targetOrderId = order_id || razorpay_order_id;
 
-    if (!targetOrderId) {
-      const thirtyMinsAgo = new Date(Date.now() - 30 * 60 * 1000).toISOString();
-      const { data: recentSub } = await supabaseAdmin
+    // Helper to check and activate a single Razorpay order
+    const checkAndActivate = async (orderIdToCheck: string) => {
+      const { data: existingSub } = await supabaseAdmin
         .from("driver_subscriptions")
-        .select("razorpay_order_id, status")
+        .select("*")
+        .eq("razorpay_order_id", orderIdToCheck)
         .eq("driver_id", driverId)
-        .gte("created_at", thirtyMinsAgo)
-        .order("created_at", { ascending: false })
-        .limit(1)
         .maybeSingle();
 
-      if (recentSub?.razorpay_order_id) {
-        targetOrderId = recentSub.razorpay_order_id;
+      if (existingSub && existingSub.status === "active") {
+        return existingSub;
+      }
+
+      const rzpOrder = await fetchRazorpayOrder(orderIdToCheck);
+      if (
+        rzpOrder &&
+        (rzpOrder.status === "paid" ||
+          (rzpOrder.amount_paid && rzpOrder.amount_paid > 0) ||
+          Boolean(rzpOrder.payment_id))
+      ) {
+        return await activateSubscriptionByOrder(
+          orderIdToCheck,
+          rzpOrder.payment_id,
+          driverId
+        );
+      }
+      return null;
+    };
+
+    // 1. If explicit order ID was provided, check it first
+    if (targetOrderId) {
+      const activated = await checkAndActivate(targetOrderId);
+      if (activated) {
+        return reply.send({
+          checked: true,
+          active: true,
+          subscription: activated,
+          message: "Payment confirmed on Razorpay! Pass activated successfully.",
+        });
       }
     }
 
-    if (!targetOrderId) {
-      return reply.send({
-        checked: false,
-        active: false,
-        message: "No recent order found to check.",
-      });
+    // 2. Also check any pending orders for this driver in the last 2 hours to avoid loopholes
+    const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
+    const { data: pendingSubs } = await supabaseAdmin
+      .from("driver_subscriptions")
+      .select("razorpay_order_id")
+      .eq("driver_id", driverId)
+      .eq("status", "pending")
+      .gte("created_at", twoHoursAgo)
+      .order("created_at", { ascending: false });
+
+    if (pendingSubs && pendingSubs.length > 0) {
+      for (const pSub of pendingSubs) {
+        if (pSub.razorpay_order_id && pSub.razorpay_order_id !== targetOrderId) {
+          const activated = await checkAndActivate(pSub.razorpay_order_id);
+          if (activated) {
+            return reply.send({
+              checked: true,
+              active: true,
+              subscription: activated,
+              message: "Payment confirmed on Razorpay! Pass activated successfully.",
+            });
+          }
+        }
+      }
     }
 
-    // 1. Check if already marked active
-    const { data: existingSub } = await supabaseAdmin
+    // 3. Fallback: check if driver has ANY active unexpired subscription
+    const { data: currentActive } = await supabaseAdmin
       .from("driver_subscriptions")
       .select("*")
-      .eq("razorpay_order_id", targetOrderId)
       .eq("driver_id", driverId)
+      .eq("status", "active")
+      .gt("expires_at", new Date().toISOString())
+      .order("expires_at", { ascending: false })
+      .limit(1)
       .maybeSingle();
 
-    if (existingSub && existingSub.status === "active") {
+    if (currentActive) {
       return reply.send({
         checked: true,
         active: true,
-        subscription: existingSub,
-        message: "Subscription is already active.",
-      });
-    }
-
-    // 2. Query Razorpay API directly
-    const rzpOrder = await fetchRazorpayOrder(targetOrderId);
-    if (!rzpOrder) {
-      return reply.send({
-        checked: true,
-        active: false,
-        message: "Order details could not be retrieved from Razorpay.",
-      });
-    }
-
-    // 3. If paid on Razorpay, activate immediately
-    if (
-      rzpOrder.status === "paid" ||
-      (rzpOrder.amount_paid && rzpOrder.amount_paid > 0) ||
-      Boolean(rzpOrder.payment_id)
-    ) {
-      const activatedSub = await activateSubscriptionByOrder(
-        targetOrderId,
-        rzpOrder.payment_id,
-        driverId
-      );
-
-      return reply.send({
-        checked: true,
-        active: true,
-        subscription: activatedSub,
-        message: "Payment confirmed on Razorpay! Pass activated successfully.",
+        subscription: currentActive,
+        message: "Active subscription present.",
       });
     }
 
     return reply.send({
       checked: true,
       active: false,
-      order_status: rzpOrder.status,
-      message: `Payment status on Razorpay is currently: ${rzpOrder.status}`,
+      message: "No captured payment found yet.",
     });
   });
 
