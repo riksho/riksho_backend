@@ -511,35 +511,6 @@ export async function subscriptionsRoutes(app: FastifyInstance) {
       return reply.status(500).send({ error: "Failed to fetch subscription" });
     }
 
-    // Auto-reconcile check: if no active subscription, check for recent pending order (within 30 mins)
-    if (!sub) {
-      const thirtyMinsAgo = new Date(now - 30 * 60 * 1000).toISOString();
-      const { data: recentPending } = await supabaseAdmin
-        .from("driver_subscriptions")
-        .select("*")
-        .eq("driver_id", driverId)
-        .eq("status", "pending")
-        .gte("created_at", thirtyMinsAgo)
-        .order("created_at", { ascending: false })
-        .limit(1)
-        .maybeSingle();
-
-      if (recentPending?.razorpay_order_id) {
-        try {
-          const rzpOrder = await fetchRazorpayOrder(recentPending.razorpay_order_id);
-          if (rzpOrder && (rzpOrder.status === "paid" || rzpOrder.amount_paid > 0)) {
-            sub = await activateSubscriptionByOrder(
-              recentPending.razorpay_order_id,
-              rzpOrder.payment_id,
-              driverId
-            );
-          }
-        } catch (e: any) {
-          logger.warn({ err: e.message }, "Background order reconciliation check failed");
-        }
-      }
-    }
-
     if (!sub) {
       return reply.send({ active: false, subscription: null });
     }
@@ -974,11 +945,11 @@ export async function subscriptionsRoutes(app: FastifyInstance) {
 
     const { data: history, error } = await supabaseAdmin
       .from("driver_subscriptions")
-      .select("*")
+      .select("id, plan_name, duration_hours, amount_paid, razorpay_payment_id, status, started_at, expires_at, created_at")
       .eq("driver_id", driverId)
       .neq("status", "pending")
       .order("created_at", { ascending: false })
-      .limit(100);
+      .limit(30);
 
     if (error) {
       logger.error({ error, driverId }, "Failed to fetch subscription history");
