@@ -25,6 +25,7 @@ const VerifyPaymentSchema = z.object({
 
 const CheckOrderStatusSchema = z.object({
   order_id: z.string().optional(),
+  razorpay_order_id: z.string().optional(),
 });
 
 const TestActivateSchema = z.object({
@@ -771,9 +772,10 @@ export async function subscriptionsRoutes(app: FastifyInstance) {
    */
   app.post("/subscriptions/check-order-status", { preHandler: [authGuard] }, async (request, reply) => {
     const driverId = request.user!.id;
-    const { order_id } = CheckOrderStatusSchema.parse(request.body || {});
+    const body = (request.body as any) || {};
+    const { order_id, razorpay_order_id } = CheckOrderStatusSchema.parse(body);
 
-    let targetOrderId = order_id;
+    let targetOrderId = order_id || razorpay_order_id;
 
     if (!targetOrderId) {
       const thirtyMinsAgo = new Date(Date.now() - 30 * 60 * 1000).toISOString();
@@ -828,7 +830,11 @@ export async function subscriptionsRoutes(app: FastifyInstance) {
     }
 
     // 3. If paid on Razorpay, activate immediately
-    if (rzpOrder.status === "paid" || rzpOrder.amount_paid > 0) {
+    if (
+      rzpOrder.status === "paid" ||
+      (rzpOrder.amount_paid && rzpOrder.amount_paid > 0) ||
+      Boolean(rzpOrder.payment_id)
+    ) {
       const activatedSub = await activateSubscriptionByOrder(
         targetOrderId,
         rzpOrder.payment_id,
