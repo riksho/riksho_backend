@@ -114,17 +114,29 @@ export function verifyRazorpaySignature(
     return true;
   }
 
-  try {
-    const expectedSignature = crypto
-      .createHmac("sha256", RAZORPAY_KEY_SECRET)
-      .update(`${orderId}|${paymentId}`)
-      .digest("hex");
+  const secretsToTry = Array.from(new Set([
+    process.env.RAZORPAY_LIVE_KEY_SECRET,
+    RAZORPAY_KEY_SECRET,
+    process.env.RAZORPAY_TEST_KEY_SECRET,
+  ].filter(Boolean) as string[]));
 
-    return expectedSignature === signature;
-  } catch (err) {
-    logger.error({ err }, "Signature verification error");
-    return false;
+  for (const secret of secretsToTry) {
+    try {
+      const expectedSignature = crypto
+        .createHmac("sha256", secret)
+        .update(`${orderId}|${paymentId}`)
+        .digest("hex");
+
+      if (expectedSignature === signature) {
+        return true;
+      }
+    } catch (err) {
+      // Continue to next secret
+    }
   }
+
+  logger.warn({ orderId, paymentId }, "Signature verification failed across all available keys");
+  return false;
 }
 
 export interface RazorpayOrderDetails {
@@ -158,71 +170,82 @@ export async function fetchRazorpayOrder(orderId: string): Promise<RazorpayOrder
     };
   }
 
-  if (RAZORPAY_KEY_ID.includes("Dummy") || RAZORPAY_KEY_SECRET.includes("dummy")) {
-    return null;
+  // Key pairs to try (Live first if live order ID / live keys available)
+  const keyPairs: Array<{ keyId: string; secret: string }> = [];
+  if (process.env.RAZORPAY_LIVE_KEY_ID && process.env.RAZORPAY_LIVE_KEY_SECRET) {
+    keyPairs.push({ keyId: process.env.RAZORPAY_LIVE_KEY_ID, secret: process.env.RAZORPAY_LIVE_KEY_SECRET });
+  }
+  if (RAZORPAY_KEY_ID && RAZORPAY_KEY_SECRET && !keyPairs.some(k => k.keyId === RAZORPAY_KEY_ID)) {
+    keyPairs.push({ keyId: RAZORPAY_KEY_ID, secret: RAZORPAY_KEY_SECRET });
+  }
+  if (process.env.RAZORPAY_TEST_KEY_ID && process.env.RAZORPAY_TEST_KEY_SECRET && !keyPairs.some(k => k.keyId === process.env.RAZORPAY_TEST_KEY_ID)) {
+    keyPairs.push({ keyId: process.env.RAZORPAY_TEST_KEY_ID, secret: process.env.RAZORPAY_TEST_KEY_SECRET });
   }
 
-  try {
-    const authHeader = `Basic ${Buffer.from(`${RAZORPAY_KEY_ID}:${RAZORPAY_KEY_SECRET}`).toString("base64")}`;
+  for (const { keyId, secret } of keyPairs) {
+    if (keyId.includes("Dummy") || secret.includes("dummy")) continue;
 
-    // 1. Fetch order
-    const orderRes = await fetch(`https://api.razorpay.com/v1/orders/${encodeURIComponent(orderId)}`, {
-      method: "GET",
-      headers: {
-        Authorization: authHeader,
-      },
-    });
-
-    if (!orderRes.ok) {
-      const errText = await orderRes.text();
-      logger.warn({ status: orderRes.status, errText, orderId }, "Failed to fetch Razorpay order");
-      return null;
-    }
-
-    const orderData = (await orderRes.json()) as any;
-
-    let paymentId: string | undefined = undefined;
-
-    // 2. If order status is paid or attempted, fetch payments for this order to find the captured payment ID
     try {
-      const paymentsRes = await fetch(`https://api.razorpay.com/v1/orders/${encodeURIComponent(orderId)}/payments`, {
+      const authHeader = `Basic ${Buffer.from(`${keyId}:${secret}`).toString("base64")}`;
+
+      // 1. Fetch order
+      const orderRes = await fetch(`https://api.razorpay.com/v1/orders/${encodeURIComponent(orderId)}`, {
         method: "GET",
         headers: {
           Authorization: authHeader,
         },
       });
 
-      if (paymentsRes.ok) {
-        const paymentsData = (await paymentsRes.json()) as any;
-        const capturedPay = (paymentsData.items || []).find(
-          (p: any) => p.status === "captured" || p.status === "authorized"
-        );
-        if (capturedPay) {
-          paymentId = capturedPay.id;
-        } else if (paymentsData.items && paymentsData.items.length > 0) {
-          paymentId = paymentsData.items[0].id;
-        }
+      if (!orderRes.ok) {
+        continue;
       }
-    } catch (payErr: any) {
-      logger.warn({ payErr: payErr.message, orderId }, "Could not fetch payments list for order");
-    }
 
-    return {
-      id: orderData.id,
-      amount: orderData.amount,
-      amount_paid: orderData.amount_paid,
-      amount_due: orderData.amount_due,
-      currency: orderData.currency,
-      receipt: orderData.receipt,
-      status: orderData.status,
-      attempts: orderData.attempts,
-      notes: orderData.notes,
-      payment_id: paymentId,
-    };
-  } catch (err: any) {
-    logger.error({ err: err.message, orderId }, "Error fetching Razorpay order");
-    return null;
+      const orderData = (await orderRes.json()) as any;
+      let paymentId: string | undefined = undefined;
+
+      // 2. If order status is paid or attempted, fetch payments for this order to find the captured payment ID
+      try {
+        const paymentsRes = await fetch(`https://api.razorpay.com/v1/orders/${encodeURIComponent(orderId)}/payments`, {
+          method: "GET",
+          headers: {
+            Authorization: authHeader,
+          },
+        });
+
+        if (paymentsRes.ok) {
+          const paymentsData = (await paymentsRes.json()) as any;
+          const capturedPay = (paymentsData.items || []).find(
+            (p: any) => p.status === "captured" || p.status === "authorized"
+          );
+          if (capturedPay) {
+            paymentId = capturedPay.id;
+          } else if (paymentsData.items && paymentsData.items.length > 0) {
+            paymentId = paymentsData.items[0].id;
+          }
+        }
+      } catch (payErr: any) {
+        logger.warn({ payErr: payErr.message, orderId }, "Could not fetch payments list for order");
+      }
+
+      return {
+        id: orderData.id,
+        amount: orderData.amount,
+        amount_paid: orderData.amount_paid,
+        amount_due: orderData.amount_due,
+        currency: orderData.currency,
+        receipt: orderData.receipt,
+        status: orderData.status,
+        attempts: orderData.attempts,
+        notes: orderData.notes,
+        payment_id: paymentId,
+      };
+    } catch (err: any) {
+      // Try next key pair
+    }
   }
+
+  logger.warn({ orderId }, "Could not fetch Razorpay order with any configured key pairs");
+  return null;
 }
 
 /**
