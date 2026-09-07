@@ -6,6 +6,8 @@ import { logger } from "../../common/logger.js";
 import {
   createRazorpayOrder,
   verifyRazorpaySignature,
+  fetchRazorpayOrder,
+  verifyRazorpayWebhookSignature,
   RAZORPAY_KEY_ID,
 } from "../../config/razorpay.js";
 
@@ -20,10 +22,133 @@ const VerifyPaymentSchema = z.object({
   razorpay_signature: z.string(),
 });
 
+const CheckOrderStatusSchema = z.object({
+  order_id: z.string().optional(),
+});
+
 const TestActivateSchema = z.object({
   plan_id: z.string().optional(),
   duration_hours: z.number().int().positive().optional(),
 });
+
+/**
+ * Shared, idempotent helper to activate a driver's subscription once payment is confirmed
+ */
+export async function activateSubscriptionByOrder(
+  razorpayOrderId: string,
+  razorpayPaymentId?: string,
+  explicitDriverId?: string
+) {
+  let query = supabaseAdmin
+    .from("driver_subscriptions")
+    .select("*")
+    .eq("razorpay_order_id", razorpayOrderId);
+
+  if (explicitDriverId) {
+    query = query.eq("driver_id", explicitDriverId);
+  }
+
+  const { data: sub } = await query.maybeSingle();
+
+  if (!sub) {
+    logger.warn({ razorpayOrderId, explicitDriverId }, "No subscription found for order");
+    return null;
+  }
+
+  // Idempotency: If already active and unexpired, return immediately
+  if (sub.status === "active") {
+    const now = Date.now();
+    const expiresTime = new Date(sub.expires_at).getTime();
+    if (expiresTime > now) {
+      return sub;
+    }
+  }
+
+  const driverId = sub.driver_id;
+  const durationHours = sub.duration_hours || 24;
+  const paymentIdToSave = razorpayPaymentId || sub.razorpay_payment_id || `pay_${Date.now()}`;
+
+  // Check if discount was applied and deduct from promo balance
+  if (sub.plan_id) {
+    let planPrice = 0;
+    const { data: planRow } = await supabaseAdmin
+      .from("subscription_plans")
+      .select("price")
+      .eq("id", sub.plan_id)
+      .maybeSingle();
+
+    if (planRow) {
+      planPrice = planRow.price;
+    } else {
+      const fb = findFallbackPlanById(sub.plan_id);
+      if (fb) planPrice = fb.price;
+    }
+
+    if (planPrice > (sub.amount_paid || 0)) {
+      const discountUsedRs = (planPrice - (sub.amount_paid || 0)) / 100;
+      if (discountUsedRs > 0) {
+        const { data: dRow } = await supabaseAdmin
+          .from("drivers")
+          .select("coupon_balance")
+          .eq("id", driverId)
+          .maybeSingle();
+        const currentBal = Number(dRow?.coupon_balance || 0);
+        await supabaseAdmin
+          .from("drivers")
+          .update({ coupon_balance: Math.max(0, currentBal - discountUsedRs) })
+          .eq("id", driverId);
+      }
+    }
+  }
+
+  // Check if driver already has an unexpired subscription -> stack duration
+  const { data: existingActive } = await supabaseAdmin
+    .from("driver_subscriptions")
+    .select("expires_at")
+    .eq("driver_id", driverId)
+    .eq("status", "active")
+    .neq("id", sub.id)
+    .gt("expires_at", new Date().toISOString())
+    .order("expires_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  const startTime = new Date();
+  let baseTime = startTime.getTime();
+  if (existingActive?.expires_at) {
+    const existingExpires = new Date(existingActive.expires_at).getTime();
+    if (existingExpires > baseTime) {
+      baseTime = existingExpires; // Stack on top of remaining time!
+    }
+  }
+
+  const expiresTime = new Date(baseTime + durationHours * 60 * 60 * 1000);
+
+  const { data: updatedSub, error: updateError } = await supabaseAdmin
+    .from("driver_subscriptions")
+    .update({
+      razorpay_payment_id: paymentIdToSave,
+      status: "active",
+      started_at: startTime.toISOString(),
+      expires_at: expiresTime.toISOString(),
+      updated_at: new Date().toISOString(),
+    })
+    .eq("id", sub.id)
+    .select()
+    .single();
+
+  if (updateError) {
+    logger.error({ updateError, subId: sub.id }, "Failed to update driver subscription to active");
+    return null;
+  }
+
+  logger.info(
+    { driverId, subId: sub.id, orderId: razorpayOrderId, expires_at: expiresTime.toISOString() },
+    "Successfully activated driver subscription"
+  );
+
+  return updatedSub;
+}
 
 export const DEFAULT_VEHICLE_FALLBACK_PLANS: Record<string, any[]> = {
   auto: [
@@ -356,7 +481,7 @@ export async function subscriptionsRoutes(app: FastifyInstance) {
       .eq("status", "active")
       .lte("expires_at", nowIso);
 
-    const { data: sub, error } = await supabaseAdmin
+    let { data: sub, error } = await supabaseAdmin
       .from("driver_subscriptions")
       .select("*")
       .eq("driver_id", driverId)
@@ -369,6 +494,35 @@ export async function subscriptionsRoutes(app: FastifyInstance) {
     if (error) {
       logger.error({ error, driverId }, "Failed to fetch active subscription");
       return reply.status(500).send({ error: "Failed to fetch subscription" });
+    }
+
+    // Auto-reconcile check: if no active subscription, check for recent pending order (within 30 mins)
+    if (!sub) {
+      const thirtyMinsAgo = new Date(now - 30 * 60 * 1000).toISOString();
+      const { data: recentPending } = await supabaseAdmin
+        .from("driver_subscriptions")
+        .select("*")
+        .eq("driver_id", driverId)
+        .eq("status", "pending")
+        .gte("created_at", thirtyMinsAgo)
+        .order("created_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      if (recentPending?.razorpay_order_id) {
+        try {
+          const rzpOrder = await fetchRazorpayOrder(recentPending.razorpay_order_id);
+          if (rzpOrder && (rzpOrder.status === "paid" || rzpOrder.amount_paid > 0)) {
+            sub = await activateSubscriptionByOrder(
+              recentPending.razorpay_order_id,
+              rzpOrder.payment_id,
+              driverId
+            );
+          }
+        } catch (e: any) {
+          logger.warn({ err: e.message }, "Background order reconciliation check failed");
+        }
+      }
     }
 
     if (!sub) {
@@ -586,110 +740,138 @@ export async function subscriptionsRoutes(app: FastifyInstance) {
       });
     }
 
-    // Find pending subscription
-    const { data: sub } = await supabaseAdmin
-      .from("driver_subscriptions")
-      .select("*")
-      .eq("razorpay_order_id", razorpay_order_id)
-      .eq("driver_id", driverId)
-      .maybeSingle();
+    const updatedSub = await activateSubscriptionByOrder(
+      razorpay_order_id,
+      razorpay_payment_id,
+      driverId
+    );
 
-    const durationHours = sub?.duration_hours || 24;
-
-    // Check if discount was applied and deduct from promo balance
-    if (sub?.plan_id) {
-      let planPrice = 0;
-      const { data: planRow } = await supabaseAdmin
-        .from("subscription_plans")
-        .select("price")
-        .eq("id", sub.plan_id)
-        .maybeSingle();
-
-      if (planRow) {
-        planPrice = planRow.price;
-      } else {
-        const fb = findFallbackPlanById(sub.plan_id);
-        if (fb) planPrice = fb.price;
-      }
-
-      if (planPrice > (sub.amount_paid || 0)) {
-        const discountUsedRs = (planPrice - sub.amount_paid) / 100;
-        if (discountUsedRs > 0) {
-          const { data: dRow } = await supabaseAdmin
-            .from("drivers")
-            .select("coupon_balance")
-            .eq("id", driverId)
-            .maybeSingle();
-          const currentBal = Number(dRow?.coupon_balance || 0);
-          await supabaseAdmin
-            .from("drivers")
-            .update({ coupon_balance: Math.max(0, currentBal - discountUsedRs) })
-            .eq("id", driverId);
-        }
-      }
-    }
-
-    // Check if driver already has an unexpired subscription -> stack duration
-    const { data: existingActive } = await supabaseAdmin
-      .from("driver_subscriptions")
-      .select("expires_at")
-      .eq("driver_id", driverId)
-      .eq("status", "active")
-      .gt("expires_at", new Date().toISOString())
-      .order("expires_at", { ascending: false })
-      .limit(1)
-      .maybeSingle();
-
-    const startTime = new Date();
-    let baseTime = startTime.getTime();
-    if (existingActive?.expires_at) {
-      const existingExpires = new Date(existingActive.expires_at).getTime();
-      if (existingExpires > baseTime) {
-        baseTime = existingExpires; // Stack on top of remaining time!
-      }
-    }
-
-    const expiresTime = new Date(baseTime + durationHours * 60 * 60 * 1000);
-
-    let updatedSub = null;
-    if (sub) {
-      const { data } = await supabaseAdmin
-        .from("driver_subscriptions")
-        .update({
-          razorpay_payment_id,
-          status: "active",
-          started_at: startTime.toISOString(),
-          expires_at: expiresTime.toISOString(),
-          updated_at: new Date().toISOString(),
-        })
-        .eq("id", sub.id)
-        .select()
-        .single();
-      updatedSub = data;
-    } else {
-      const { data } = await supabaseAdmin
-        .from("driver_subscriptions")
-        .insert({
-          driver_id: driverId,
-          plan_name: `${durationHours} Hours Pass`,
-          duration_hours: durationHours,
-          amount_paid: 4900,
-          razorpay_order_id,
-          razorpay_payment_id,
-          status: "active",
-          started_at: startTime.toISOString(),
-          expires_at: expiresTime.toISOString(),
-        })
-        .select()
-        .single();
-      updatedSub = data;
+    if (!updatedSub) {
+      return reply.status(500).send({ error: "Failed to activate subscription." });
     }
 
     return reply.send({
       success: true,
-      message: `Recharge successful! Active for ${durationHours} hours.`,
+      message: `Recharge successful! Active for ${updatedSub.duration_hours || 24} hours.`,
       subscription: updatedSub,
     });
+  });
+
+  /**
+   * POST /subscriptions/check-order-status — Reconcile order status directly against Razorpay API
+   * Used when returning from external UPI apps (GPay, PhonePe) or upon app resume.
+   */
+  app.post("/subscriptions/check-order-status", { preHandler: [authGuard] }, async (request, reply) => {
+    const driverId = request.user!.id;
+    const { order_id } = CheckOrderStatusSchema.parse(request.body || {});
+
+    let targetOrderId = order_id;
+
+    if (!targetOrderId) {
+      const thirtyMinsAgo = new Date(Date.now() - 30 * 60 * 1000).toISOString();
+      const { data: pendingSub } = await supabaseAdmin
+        .from("driver_subscriptions")
+        .select("razorpay_order_id")
+        .eq("driver_id", driverId)
+        .eq("status", "pending")
+        .gte("created_at", thirtyMinsAgo)
+        .order("created_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      if (pendingSub?.razorpay_order_id) {
+        targetOrderId = pendingSub.razorpay_order_id;
+      }
+    }
+
+    if (!targetOrderId) {
+      return reply.send({
+        checked: false,
+        active: false,
+        message: "No recent pending order found to check.",
+      });
+    }
+
+    // 1. Check if already marked active
+    const { data: existingSub } = await supabaseAdmin
+      .from("driver_subscriptions")
+      .select("*")
+      .eq("razorpay_order_id", targetOrderId)
+      .eq("driver_id", driverId)
+      .maybeSingle();
+
+    if (existingSub && existingSub.status === "active") {
+      return reply.send({
+        checked: true,
+        active: true,
+        subscription: existingSub,
+        message: "Subscription is already active.",
+      });
+    }
+
+    // 2. Query Razorpay API directly
+    const rzpOrder = await fetchRazorpayOrder(targetOrderId);
+    if (!rzpOrder) {
+      return reply.send({
+        checked: true,
+        active: false,
+        message: "Order details could not be retrieved from Razorpay.",
+      });
+    }
+
+    // 3. If paid on Razorpay, activate immediately
+    if (rzpOrder.status === "paid" || rzpOrder.amount_paid > 0) {
+      const activatedSub = await activateSubscriptionByOrder(
+        targetOrderId,
+        rzpOrder.payment_id,
+        driverId
+      );
+
+      return reply.send({
+        checked: true,
+        active: true,
+        subscription: activatedSub,
+        message: "Payment confirmed on Razorpay! Pass activated successfully.",
+      });
+    }
+
+    return reply.send({
+      checked: true,
+      active: false,
+      order_status: rzpOrder.status,
+      message: `Payment status on Razorpay is currently: ${rzpOrder.status}`,
+    });
+  });
+
+  /**
+   * POST /subscriptions/razorpay-webhook — Server-to-server webhook handler from Razorpay
+   */
+  app.post("/subscriptions/razorpay-webhook", async (request, reply) => {
+    const signature = (request.headers["x-razorpay-signature"] as string) || "";
+    const rawBody = typeof request.body === "string" ? request.body : JSON.stringify(request.body);
+
+    const isValid = verifyRazorpayWebhookSignature(rawBody, signature);
+    if (!isValid) {
+      logger.warn({ signature }, "Invalid Razorpay webhook signature");
+      return reply.status(400).send({ error: "INVALID_SIGNATURE" });
+    }
+
+    const payload = typeof request.body === "object" ? (request.body as any) : JSON.parse(rawBody || "{}");
+    const event = payload.event;
+    logger.info({ event }, "Received Razorpay webhook event");
+
+    if (event === "order.paid" || event === "payment.captured") {
+      const orderEntity = payload.payload?.order?.entity || payload.payload?.payment?.entity;
+      const orderId = orderEntity?.order_id || orderEntity?.id;
+      const paymentId = payload.payload?.payment?.entity?.id || orderEntity?.payment_id;
+
+      if (orderId) {
+        const activated = await activateSubscriptionByOrder(orderId, paymentId);
+        logger.info({ orderId, activated: !!activated }, "Webhook processed subscription activation");
+      }
+    }
+
+    return reply.status(200).send({ status: "ok" });
   });
 
   /**
