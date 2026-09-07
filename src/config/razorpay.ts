@@ -85,7 +85,11 @@ export async function createRazorpayOrder(options: {
       throw new Error(`Razorpay API Error: ${errBody}`);
     }
 
-    const data = (await res.json()) as { id: string; amount: number; currency: string };
+    const data = (await res.json()) as any;
+    if (!data || !data.id) {
+      logger.error({ data }, "Razorpay response missing order id");
+      throw new Error(data?.error?.description || "Razorpay response did not contain an order ID");
+    }
     return {
       id: data.id,
       amount: data.amount,
