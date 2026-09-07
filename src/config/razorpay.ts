@@ -1,18 +1,22 @@
 import crypto from "node:crypto";
 import { logger } from "../common/logger.js";
 
-const mode = (process.env.RAZORPAY_MODE || "test").toLowerCase().trim();
-export const IS_RAZORPAY_LIVE = mode === "live" || mode === "production";
+const rawMode = (process.env.RAZORPAY_MODE || "").toLowerCase().trim();
+export const IS_RAZORPAY_LIVE =
+  rawMode === "live" ||
+  rawMode === "production" ||
+  Boolean(process.env.RAZORPAY_LIVE_KEY_ID && rawMode !== "test") ||
+  (process.env.RAZORPAY_KEY_ID || "").startsWith("rzp_live_");
 
 export const RAZORPAY_KEY_ID =
   (IS_RAZORPAY_LIVE ? process.env.RAZORPAY_LIVE_KEY_ID : process.env.RAZORPAY_TEST_KEY_ID) ||
   process.env.RAZORPAY_KEY_ID ||
-  "rzp_test_RikshoBuddyDummy";
+  "rzp_live_SxBDD0fNLPe7Ic";
 
 export const RAZORPAY_KEY_SECRET =
   (IS_RAZORPAY_LIVE ? process.env.RAZORPAY_LIVE_KEY_SECRET : process.env.RAZORPAY_TEST_KEY_SECRET) ||
   process.env.RAZORPAY_KEY_SECRET ||
-  "rzp_secret_dummy";
+  "XnWnA07X027Ce3blid0Vlroz";
 
 export const RAZORPAY_WEBHOOK_SECRET =
   (IS_RAZORPAY_LIVE ? process.env.RAZORPAY_LIVE_WEBHOOK_SECRET : process.env.RAZORPAY_TEST_WEBHOOK_SECRET) ||
