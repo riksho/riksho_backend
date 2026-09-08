@@ -796,6 +796,7 @@ export async function subscriptionsRoutes(app: FastifyInstance) {
         return reply.send({
           checked: true,
           active: true,
+          newly_activated: true,
           subscription: activated,
           message: "Payment confirmed on Razorpay! Pass activated successfully.",
         });
@@ -820,6 +821,7 @@ export async function subscriptionsRoutes(app: FastifyInstance) {
             return reply.send({
               checked: true,
               active: true,
+              newly_activated: true,
               subscription: activated,
               message: "Payment confirmed on Razorpay! Pass activated successfully.",
             });
@@ -828,7 +830,17 @@ export async function subscriptionsRoutes(app: FastifyInstance) {
       }
     }
 
-    // 3. Fallback: check if driver has ANY active unexpired subscription
+    // 3. If explicit targetOrderId was requested and was NOT activated, report specifically on it
+    if (targetOrderId) {
+      return reply.send({
+        checked: true,
+        active: false,
+        target_order_id: targetOrderId,
+        message: "Payment not confirmed or still processing on Razorpay.",
+      });
+    }
+
+    // 4. Fallback only when NO specific order was queried: check if driver has ANY active unexpired subscription
     const { data: currentActive } = await supabaseAdmin
       .from("driver_subscriptions")
       .select("*")
