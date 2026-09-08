@@ -774,11 +774,12 @@ export async function subscriptionsRoutes(app: FastifyInstance) {
       }
 
       const rzpOrder = await fetchRazorpayOrder(orderIdToCheck);
+      // STRICT SECURITY: Must be confirmed paid on Razorpay (status === 'paid' or amount_paid > 0 or verified captured payment)
       if (
         rzpOrder &&
         (rzpOrder.status === "paid" ||
           (rzpOrder.amount_paid && rzpOrder.amount_paid > 0) ||
-          Boolean(rzpOrder.payment_id))
+          (rzpOrder.payment_id && rzpOrder.is_paid))
       ) {
         return await activateSubscriptionByOrder(
           orderIdToCheck,

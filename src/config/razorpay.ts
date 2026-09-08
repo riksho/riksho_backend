@@ -150,6 +150,7 @@ export interface RazorpayOrderDetails {
   attempts: number;
   notes?: Record<string, string>;
   payment_id?: string;
+  is_paid: boolean;
 }
 
 /**
@@ -167,6 +168,7 @@ export async function fetchRazorpayOrder(orderId: string): Promise<RazorpayOrder
       status: "paid",
       attempts: 1,
       payment_id: `pay_mock_${Date.now()}`,
+      is_paid: true,
     };
   }
 
@@ -214,18 +216,26 @@ export async function fetchRazorpayOrder(orderId: string): Promise<RazorpayOrder
 
         if (paymentsRes.ok) {
           const paymentsData = (await paymentsRes.json()) as any;
+          // CRITICAL SECURITY: ONLY accept payments that are captured or authorized!
+          // An aborted/cancelled payment in Google Pay remains in status 'created' and MUST NOT be accepted.
           const capturedPay = (paymentsData.items || []).find(
             (p: any) => p.status === "captured" || p.status === "authorized"
           );
           if (capturedPay) {
             paymentId = capturedPay.id;
-          } else if (paymentsData.items && paymentsData.items.length > 0) {
-            paymentId = paymentsData.items[0].id;
           }
         }
       } catch (payErr: any) {
         logger.warn({ payErr: payErr.message, orderId }, "Could not fetch payments list for order");
       }
+
+      // Legitimate payment confirmation:
+      // Either order status is paid, or amount_paid > 0, OR we found a genuinely captured payment ID
+      const isOrderFullyPaid = Boolean(
+        orderData.status === "paid" ||
+        (orderData.amount_paid && orderData.amount_paid > 0) ||
+        paymentId
+      );
 
       return {
         id: orderData.id,
@@ -238,6 +248,7 @@ export async function fetchRazorpayOrder(orderId: string): Promise<RazorpayOrder
         attempts: orderData.attempts,
         notes: orderData.notes,
         payment_id: paymentId,
+        is_paid: isOrderFullyPaid,
       };
     } catch (err: any) {
       // Try next key pair
