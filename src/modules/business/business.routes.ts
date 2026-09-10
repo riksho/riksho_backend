@@ -254,7 +254,7 @@ export default async function businessRoutes(app: FastifyInstance) {
   async function getBusinessForUser(userId: string) {
     const { data } = await supabaseAdmin
       .from("businesses")
-      .select("id")
+      .select("id, status")
       .eq("owner_user_id", userId)
       .single();
     return data;
@@ -361,15 +361,21 @@ export default async function businessRoutes(app: FastifyInstance) {
         phone: request.user!.phone,
         role: "unregistered",
         business: null,
+        business_status: null,
       });
     }
+
+    // Business exists but may be pending approval
+    const bizStatus = business?.status || "active";
+    const isApproved = bizStatus === "active" || bizStatus === "approved";
 
     return reply.send({
       id: userId,
       email: request.user!.email,
       phone: request.user!.phone,
-      role: isAdmin ? "admin" : "business_owner",
-      business: business || null,
+      role: isAdmin ? "admin" : (isApproved ? "business_owner" : "unregistered"),
+      business: isApproved ? business : null,
+      business_status: bizStatus,
     });
   });
 
