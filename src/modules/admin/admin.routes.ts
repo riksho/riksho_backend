@@ -6,8 +6,12 @@ import { logger } from "../../common/logger.js";
 import { z } from "zod";
 import { sendPush } from "../notifications/push.service.js";
 import { withSignedUrls } from "../../common/document-urls.js";
+import {
+  sendBusinessApprovalEmail,
+  sendBusinessApprovalSMS,
+} from "../notifications/business-notifications.service.js";
 
-const ReasonSchema = z.object({ reason: z.string().min(1) });
+const ReasonSchema = z.object({ reason: z.string().min(1).optional() });
 
 export async function adminRoutes(app: FastifyInstance) {
   const guard = { preHandler: [authGuard, requireRole("admin")] };
@@ -162,6 +166,174 @@ export async function adminRoutes(app: FastifyInstance) {
     const { reason } = ReasonSchema.parse(req.body);
     await setStatus(id, false, "suspended", req.user!.id, reason);
     return { ok: true, verification_status: "suspended" };
+  });
+
+  // ─── Business Management Endpoints ─────────────────────────────────
+
+  // GET /admin/businesses — List all registered businesses with filtering
+  app.get("/admin/businesses", guard, async (req) => {
+    const { status = "pending", q } = req.query as any;
+
+    let query = supabaseAdmin
+      .from("businesses")
+      .select("*")
+      .order("created_at", { ascending: false });
+
+    if (status && status !== "all") {
+      query = query.eq("status", status);
+    }
+
+    if (q) {
+      query = query.or(`name.ilike.%${q}%,gstin.ilike.%${q}%,pan.ilike.%${q}%,city.ilike.%${q}%,contact_name.ilike.%${q}%,email.ilike.%${q}%,phone.ilike.%${q}%`);
+    }
+
+    const { data: businesses, error } = await query;
+    if (error) {
+      logger.error({ error }, "Failed to query businesses for admin");
+      throw error;
+    }
+
+    // Also fetch status counts
+    const { data: allBiz } = await supabaseAdmin
+      .from("businesses")
+      .select("status");
+
+    const counts = {
+      pending: (allBiz || []).filter(b => b.status === "pending").length,
+      active: (allBiz || []).filter(b => b.status === "active" || b.status === "approved").length,
+      rejected: (allBiz || []).filter(b => b.status === "rejected").length,
+      all: (allBiz || []).length,
+    };
+
+    return {
+      businesses: businesses || [],
+      counts,
+    };
+  });
+
+  // POST /admin/businesses/:id/approve — Approve business & dispatch congratulatory Email + SMS
+  app.post("/admin/businesses/:id/approve", guard, async (req, reply) => {
+    const { id } = req.params as { id: string };
+
+    // 1. Fetch current business details
+    const { data: biz, error: fetchErr } = await supabaseAdmin
+      .from("businesses")
+      .select("*")
+      .eq("id", id)
+      .single();
+
+    if (fetchErr || !biz) {
+      return reply.status(404).send({ error: "Business not found" });
+    }
+
+    // 2. Update status to active
+    const { error: updateErr } = await supabaseAdmin
+      .from("businesses")
+      .update({ status: "active" })
+      .eq("id", id);
+
+    if (updateErr) {
+      logger.error({ id, error: updateErr }, "Failed to approve business status");
+      throw updateErr;
+    }
+
+    // 3. Upgrade owner account type in users table
+    if (biz.owner_user_id) {
+      try {
+        await supabaseAdmin
+          .from("users")
+          .update({ account_type: "business" })
+          .eq("id", biz.owner_user_id);
+      } catch (err) {
+        logger.warn({ err }, "Could not upgrade users account_type");
+      }
+    }
+
+    // 4. Record admin action log
+    try {
+      await supabaseAdmin
+        .from("admin_actions")
+        .insert({
+          admin_id: req.user!.id,
+          action: "business_approved",
+          reason: `Approved enterprise business ${biz.name} (${biz.gstin || "PAN"})`,
+        });
+    } catch (err) {
+      logger.warn({ err }, "Could not write admin_actions record");
+    }
+
+    // 5. Auto-send Congratulatory SMS and Email notifications!
+    const notificationPayload = {
+      businessId: biz.id,
+      businessName: biz.name,
+      contactName: biz.contact_name,
+      email: biz.email,
+      phone: biz.phone,
+      city: biz.city,
+    };
+
+    const [smsResult, emailResult] = await Promise.allSettled([
+      sendBusinessApprovalSMS(notificationPayload),
+      sendBusinessApprovalEmail(notificationPayload),
+    ]);
+
+    logger.info(
+      {
+        businessId: id,
+        smsStatus: smsResult.status,
+        emailStatus: emailResult.status,
+      },
+      "Dispatched approval notifications to registered business owner"
+    );
+
+    return {
+      ok: true,
+      status: "active",
+      notifications: {
+        sms: smsResult.status === "fulfilled" ? smsResult.value : { success: false },
+        email: emailResult.status === "fulfilled" ? emailResult.value : { success: false },
+      },
+    };
+  });
+
+  // POST /admin/businesses/:id/reject — Reject business registration
+  app.post("/admin/businesses/:id/reject", guard, async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const { reason } = ReasonSchema.parse(req.body || {});
+
+    const { data: biz, error: fetchErr } = await supabaseAdmin
+      .from("businesses")
+      .select("*")
+      .eq("id", id)
+      .single();
+
+    if (fetchErr || !biz) {
+      return reply.status(404).send({ error: "Business not found" });
+    }
+
+    const { error: updateErr } = await supabaseAdmin
+      .from("businesses")
+      .update({ status: "rejected" })
+      .eq("id", id);
+
+    if (updateErr) {
+      logger.error({ id, error: updateErr }, "Failed to reject business");
+      throw updateErr;
+    }
+
+    try {
+      await supabaseAdmin
+        .from("admin_actions")
+        .insert({
+          admin_id: req.user!.id,
+          action: "business_rejected",
+          reason: reason || `Rejected business registration for ${biz.name}`,
+        });
+    } catch (err) {
+      logger.warn({ err }, "Could not write admin_actions record");
+    }
+
+    return { ok: true, status: "rejected" };
   });
 
   app.get("/admin/cancellations", guard, async (req) => {
