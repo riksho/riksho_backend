@@ -1,4 +1,5 @@
 import type { FastifyRequest, FastifyReply } from "fastify";
+import jwt from "jsonwebtoken";
 import { supabaseAnon, supabaseAdmin } from "../config/supabase.js";
 
 export interface AuthUser {
@@ -34,6 +35,20 @@ export async function authGuard(request: FastifyRequest, reply: FastifyReply) {
     const { data, error } = await supabaseAnon.auth.getUser(token);
 
     if (error || !data.user) {
+      // Fallback: Check if token is a valid DusMint internal JWT
+      try {
+        const JWT_SECRET = process.env.JWT_SECRET || "dusmint-secret-key-32-chars-minimum-prod-2026";
+        const decoded = jwt.verify(token, JWT_SECRET) as any;
+        if (decoded && (decoded.sub || decoded.id)) {
+          request.user = {
+            id: decoded.sub || decoded.id,
+            phone: decoded.phone,
+            role: decoded.role || "customer",
+          };
+          return;
+        }
+      } catch {}
+
       return reply.status(401).send({
         error: "Unauthorized",
         message: "Invalid or expired token",
