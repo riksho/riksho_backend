@@ -3,6 +3,117 @@ import { supabaseAdmin } from "../../config/supabase.js";
 import { logger } from "../../common/logger.js";
 
 export async function dusmintVendorRoutes(fastify: FastifyInstance) {
+  // 0.5 Vendor Onboarding (4 Checklist Items: Owner, Shop & Address, Photo, UPI)
+  fastify.post("/vendor/onboarding", async (request: FastifyRequest, reply: FastifyReply) => {
+    const body = request.body as {
+      ownerName: string;
+      ownerPhone: string;
+      email?: string;
+      shopName: string;
+      category?: string;
+      address: string;
+      lat?: number;
+      lng?: number;
+      shopPhotoUrls?: string[];
+      bankOrUpi: string;
+      authUserId?: string;
+    };
+
+    if (!body.ownerName || !body.ownerPhone || !body.shopName || !body.address || !body.bankOrUpi) {
+      return reply.status(400).send({
+        success: false,
+        message: "Missing required onboarding fields: ownerName, ownerPhone, shopName, address, and bankOrUpi are required.",
+      });
+    }
+
+    const cleanPhone = body.ownerPhone.replace(/\D/g, "").slice(-10);
+    const formattedPhone = `+91${cleanPhone}`;
+
+    // Get or create default cluster
+    let { data: cluster } = await supabaseAdmin.from("clusters").select("id").limit(1).maybeSingle();
+    if (!cluster) {
+      const { data: newCluster } = await supabaseAdmin
+        .from("clusters")
+        .insert({
+          name: "Central Mandi Cluster",
+          city: "Patna",
+          state: "Bihar",
+          pincode: "800001",
+          center_lat: body.lat || 25.5941,
+          center_lng: body.lng || 85.1376,
+          radius_km: 15,
+          is_active: true,
+        })
+        .select("id")
+        .single();
+      cluster = newCluster;
+    }
+
+    const validCategories = [
+      "vegetables", "fruits", "dairy", "groceries", "bakery", "meat_poultry", "seafood", "household"
+    ];
+    const category = validCategories.includes(body.category || "") ? body.category : "groceries";
+
+    // Upsert vendor record
+    const { data: existingVendor } = await supabaseAdmin
+      .from("vendors")
+      .select("id")
+      .or(`owner_phone.ilike.%${cleanPhone}%${body.authUserId ? `,auth_user_id.eq.${body.authUserId}` : ""}`)
+      .maybeSingle();
+
+    const vendorPayload: any = {
+      name: body.shopName,
+      owner_name: body.ownerName,
+      owner_phone: formattedPhone,
+      category,
+      cluster_id: cluster?.id,
+      address: body.address,
+      lat: body.lat || 25.5941,
+      lng: body.lng || 85.1376,
+      bank_or_upi: body.bankOrUpi,
+      payout_mode: "upi",
+      status: "verified",
+      is_open: true,
+      shop_photo_urls: body.shopPhotoUrls || [],
+    };
+
+    if (body.authUserId) {
+      vendorPayload.auth_user_id = body.authUserId;
+    }
+
+    let savedVendor: any = null;
+    if (existingVendor) {
+      const { data, error } = await supabaseAdmin
+        .from("vendors")
+        .update(vendorPayload)
+        .eq("id", existingVendor.id)
+        .select()
+        .single();
+      if (error) {
+        logger.error({ err: error }, "Failed to update vendor onboarding");
+        return reply.status(500).send({ success: false, message: error.message });
+      }
+      savedVendor = data;
+    } else {
+      const { data, error } = await supabaseAdmin
+        .from("vendors")
+        .insert(vendorPayload)
+        .select()
+        .single();
+      if (error) {
+        logger.error({ err: error }, "Failed to insert vendor onboarding");
+        return reply.status(500).send({ success: false, message: error.message });
+      }
+      savedVendor = data;
+    }
+
+    return {
+      success: true,
+      message: "Vendor onboarded successfully! Welcome to DusMint.",
+      vendor: savedVendor,
+    };
+  });
+
   // 0. Get Active Vendors List (for vendor app login/switching)
   fastify.get("/vendor/list", async () => {
     const { data: vendors } = await supabaseAdmin

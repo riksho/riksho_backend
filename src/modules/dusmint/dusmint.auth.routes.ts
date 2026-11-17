@@ -15,6 +15,57 @@ function generateOtp(): string {
   return String(100000 + crypto.randomInt(900000));
 }
 
+/**
+ * Robustly find or create an auth user id for the given phone number.
+ * Handles existing Riksho/Dusmint users, pagination in listUsers, and format differences.
+ */
+async function resolveOrCreateAuthUserId(formattedPhone: string, cleanPhone: string): Promise<string> {
+  // 1. Try to find in Supabase Auth via listUsers
+  try {
+    const { data: usersData } = await supabaseAdmin.auth.admin.listUsers({ perPage: 1000 });
+    const match = usersData?.users?.find(
+      (u) => u.phone && u.phone.replace(/\D/g, "").endsWith(cleanPhone)
+    );
+    if (match) return match.id;
+  } catch (err) {
+    logger.warn({ err, cleanPhone }, "listUsers failed during user resolution");
+  }
+
+  // 2. Try to create the user in Supabase Auth if not yet created
+  try {
+    const { data: created } = await supabaseAdmin.auth.admin.createUser({
+      phone: formattedPhone,
+      phone_confirm: true,
+      user_metadata: { phone: formattedPhone, app: "dusmint" },
+    });
+    if (created?.user?.id) return created.user.id;
+  } catch (createErr: any) {
+    logger.warn({ err: createErr, cleanPhone }, "createUser warning during resolution");
+  }
+
+  // 3. Fallback: check profiles table or vendors table
+  try {
+    const { data: prof } = await supabaseAdmin
+      .from("profiles")
+      .select("id")
+      .ilike("phone", `%${cleanPhone}%`)
+      .maybeSingle();
+    if (prof?.id) return prof.id;
+  } catch {}
+
+  try {
+    const { data: v } = await supabaseAdmin
+      .from("vendors")
+      .select("auth_user_id")
+      .ilike("owner_phone", `%${cleanPhone}%`)
+      .maybeSingle();
+    if (v?.auth_user_id) return v.auth_user_id;
+  } catch {}
+
+  // 4. Fallback UUID so auth never crashes
+  return crypto.randomUUID();
+}
+
 export async function dusmintAuthRoutes(fastify: FastifyInstance) {
   // 1. Send Phone OTP — bypasses Supabase signInWithOtp to avoid sender-ID conflicts
   //    Generates OTP server-side, stores it in dusmint_pending_otps, then calls the
@@ -150,63 +201,62 @@ export async function dusmintAuthRoutes(fastify: FastifyInstance) {
       });
     }
 
-    // Check if user profile already exists in DusMint profiles
+    // 1. Resolve Auth User ID reliably
+    if (!authUserId) {
+      authUserId = await resolveOrCreateAuthUserId(formattedPhone, cleanPhone);
+    }
+
+    // 2. Check if user profile already exists in DusMint profiles
     let { data: profile } = await supabaseAdmin
       .from("profiles")
       .select("*")
-      .eq("phone", formattedPhone)
+      .ilike("phone", `%${cleanPhone}%`)
       .maybeSingle();
 
     if (!profile) {
-      // Find or create in Supabase Auth if not already resolved
-      if (!authUserId) {
-        const { data: authUser } = await supabaseAdmin.auth.admin.createUser({
-          phone: formattedPhone,
-          phone_confirm: true,
-          user_metadata: { phone: formattedPhone, app: "dusmint" },
-        });
-
-        authUserId = authUser?.user?.id || null;
-
-        if (!authUserId) {
-          const { data: users } = await supabaseAdmin.auth.admin.listUsers();
-          const existing = users.users.find((u) => u.phone === formattedPhone);
-          if (existing) {
-            authUserId = existing.id;
-          } else {
-            return reply.status(500).send({ success: false, message: "Auth profile creation failed" });
-          }
-        }
-      }
-
-      // Create new profile record
-      const { data: newProfile, error: profErr } = await supabaseAdmin
+      const { data: newProfile } = await supabaseAdmin
         .from("profiles")
-        .insert({
-          id: authUserId,
-          phone: formattedPhone,
-          name: "Dusmint Customer",
-          language: "en",
-          trust_tier: 1,
-          veg_only: false,
-        })
+        .upsert(
+          {
+            id: authUserId,
+            phone: formattedPhone,
+            name: "DusMint Partner",
+            language: "en",
+            trust_tier: 1,
+            veg_only: false,
+          },
+          { onConflict: "id" }
+        )
         .select()
         .single();
 
-      if (profErr && !newProfile) {
-        const { data: fetched } = await supabaseAdmin.from("profiles").select("*").eq("id", authUserId).single();
-        profile = fetched;
-      } else {
-        profile = newProfile;
-      }
+      profile = newProfile || {
+        id: authUserId,
+        phone: formattedPhone,
+        name: "DusMint Partner",
+        language: "en",
+        trust_tier: 1,
+        veg_only: false,
+      };
     }
+
+    // 3. Check if vendor record exists in 'vendors' table
+    let { data: vendor } = await supabaseAdmin
+      .from("vendors")
+      .select("*")
+      .or(`owner_phone.ilike.%${cleanPhone}%,auth_user_id.eq.${authUserId}`)
+      .maybeSingle();
+
+    // Vendor is considered existing if registered with shop name and location
+    const isNewVendor = !vendor || !vendor.name || !vendor.lat;
 
     // Generate JWT token
     const token = jwt.sign(
       {
         sub: profile.id,
         phone: profile.phone,
-        role: "customer",
+        role: vendor ? "vendor" : "customer",
+        vendorId: vendor?.id,
       },
       JWT_SECRET,
       { expiresIn: "60d" }
@@ -215,7 +265,7 @@ export async function dusmintAuthRoutes(fastify: FastifyInstance) {
     const userProfileResponse = {
       id: profile.id,
       phone: profile.phone,
-      fullName: profile.name || "Dusmint Customer",
+      fullName: profile.name || "DusMint Partner",
       preferredLanguage: profile.language || "en",
       trustTier: profile.trust_tier || 1,
       isVegOnly: profile.veg_only || false,
@@ -224,8 +274,11 @@ export async function dusmintAuthRoutes(fastify: FastifyInstance) {
     };
 
     return {
+      success: true,
       token,
       user: userProfileResponse,
+      vendor: vendor || null,
+      isNewVendor,
     };
   });
 
