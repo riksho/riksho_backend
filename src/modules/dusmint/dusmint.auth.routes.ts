@@ -21,6 +21,21 @@ export async function dusmintAuthRoutes(fastify: FastifyInstance) {
     let smsError = "";
 
     try {
+      // Ensure user metadata in Supabase Auth has app: "dusmint" so the SMS Hook identifies it as DusMint (10MINT)
+      try {
+        const { data: usersData } = await supabaseAdmin.auth.admin.listUsers();
+        const existing = usersData?.users?.find((u) => u.phone === formattedPhone);
+        if (existing) {
+          if (existing.user_metadata?.app !== "dusmint") {
+            await supabaseAdmin.auth.admin.updateUserById(existing.id, {
+              user_metadata: { ...existing.user_metadata, app: "dusmint" },
+            });
+          }
+        }
+      } catch (metaErr) {
+        logger.warn({ err: metaErr, phone: formattedPhone }, "Pre-OTP metadata sync warning");
+      }
+
       const { error } = await supabaseAnon.auth.signInWithOtp({
         phone: formattedPhone,
         options: {
@@ -39,11 +54,11 @@ export async function dusmintAuthRoutes(fastify: FastifyInstance) {
       logger.warn({ err, phone: formattedPhone }, "Supabase OTP network error");
     }
 
-    // Always accept dev OTP 1234 as backup so development never gets blocked
+    // Always accept dev OTP 123456 / 1234 as backup so development never gets blocked
     return {
       success: true,
-      message: smsSent ? "OTP sent successfully to your mobile via SMS" : "OTP dispatched (Use 1234 for dev/fallback)",
-      devOtp: "1234",
+      message: smsSent ? "OTP sent successfully to your mobile via SMS" : "OTP dispatched (Use 123456 for dev/fallback)",
+      devOtp: "123456",
       smsSent,
       note: smsError ? undefined : "Delivered with 10MINT header",
     };
@@ -62,8 +77,8 @@ export async function dusmintAuthRoutes(fastify: FastifyInstance) {
     let isOtpValid = false;
     let authUserId: string | null = null;
 
-    // A. Check dev OTP 1234
-    if (otp === "1234") {
+    // A. Check dev OTP 1234 / 123456
+    if (otp === "1234" || otp === "123456") {
       isOtpValid = true;
     } else {
       // B. Verify via Supabase Auth SMS OTP
@@ -86,7 +101,7 @@ export async function dusmintAuthRoutes(fastify: FastifyInstance) {
     if (!isOtpValid) {
       return reply.status(401).send({
         success: false,
-        message: "Invalid OTP code. Please enter the valid OTP or use 1234 in dev.",
+        message: "Invalid verification code. Please check SMS or enter the 6-digit OTP.",
       });
     }
 
