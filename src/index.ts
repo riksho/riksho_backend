@@ -27,6 +27,7 @@ import { fcmRoutes } from "./modules/notifications/fcm.routes.js";
 import { promotersRoutes } from "./modules/promoters/promoters.routes.js";
 import { subscriptionsRoutes } from "./modules/subscriptions/subscriptions.routes.js";
 import { promosRoutes } from "./modules/promos/promos.routes.js";
+import { dusmintRoutes } from "./modules/dusmint/dusmint.routes.js";
 
 // Firebase init (side-effect: initialises firebase-admin)
 import "./config/firebase.js";
@@ -146,6 +147,7 @@ await app.register(fcmRoutes);
 await app.register(promotersRoutes);
 await app.register(subscriptionsRoutes);
 await app.register(promosRoutes);
+await app.register(dusmintRoutes);
 
 // --- Start Background Services ---
 startScheduler();
