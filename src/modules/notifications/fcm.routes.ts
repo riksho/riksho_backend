@@ -10,12 +10,21 @@ const SendPushSchema = z.object({
   title: z.string().min(1).max(100),
   body: z.string().min(1).max(500),
   imageUrl: z.string().url().optional().nullable().or(z.literal("")),
-  target: z.enum(["all_users", "riders", "drivers"]).default("all_users"),
+  target: z.enum([
+    "all_users",
+    "riders",
+    "drivers",
+    "dusmint_all",
+    "dusmint_customers",
+    "dusmint_partners",
+    "dusmint_leads",
+  ]).default("all_users"),
 });
 
 const FcmRegisterSchema = z.object({
   token: z.string().min(10),
   platform: z.enum(["android", "ios"]).default("android"),
+  app: z.string().optional().default("riksho"),
 });
 
 export async function fcmRoutes(app: FastifyInstance) {
@@ -64,6 +73,59 @@ export async function fcmRoutes(app: FastifyInstance) {
         tokens = Array.from(new Set(
           (tokenRows || [])
             .filter((r) => r.user_id && !driverUserIds.has(r.user_id) && r.token)
+            .map((r) => r.token)
+        ));
+      } else if (target === "dusmint_partners") {
+        const { data: vendorRows } = await supabaseAdmin.from("vendors").select("auth_user_id");
+        const vendorUserIds = new Set((vendorRows || []).map((v) => v.auth_user_id).filter(Boolean));
+
+        const { data: tokenRows } = await supabaseAdmin
+          .from("push_tokens")
+          .select("user_id, token, app, updated_at")
+          .order("updated_at", { ascending: false });
+
+        tokens = Array.from(new Set(
+          (tokenRows || [])
+            .filter((r) => (r.app === "dusmint_vendor" || (r.user_id && vendorUserIds.has(r.user_id))) && r.token)
+            .map((r) => r.token)
+        ));
+      } else if (target === "dusmint_customers") {
+        const { data: profileRows } = await supabaseAdmin.from("profiles").select("id");
+        const customerIds = new Set((profileRows || []).map((p) => p.id));
+
+        const { data: tokenRows } = await supabaseAdmin
+          .from("push_tokens")
+          .select("user_id, token, app, updated_at")
+          .order("updated_at", { ascending: false });
+
+        tokens = Array.from(new Set(
+          (tokenRows || [])
+            .filter((r) => (r.app === "dusmint_customer" || (r.user_id && customerIds.has(r.user_id))) && r.token)
+            .map((r) => r.token)
+        ));
+      } else if (target === "dusmint_all") {
+        const { data: tokenRows } = await supabaseAdmin
+          .from("push_tokens")
+          .select("user_id, token, app, updated_at")
+          .order("updated_at", { ascending: false });
+
+        tokens = Array.from(new Set(
+          (tokenRows || [])
+            .filter((r) => (r.app?.startsWith("dusmint") || false) && r.token)
+            .map((r) => r.token)
+        ));
+      } else if (target === "dusmint_leads") {
+        const { data: vendorRows } = await supabaseAdmin.from("vendors").select("auth_user_id");
+        const vendorUserIds = new Set((vendorRows || []).map((v) => v.auth_user_id).filter(Boolean));
+
+        const { data: tokenRows } = await supabaseAdmin
+          .from("push_tokens")
+          .select("user_id, token, app, updated_at")
+          .order("updated_at", { ascending: false });
+
+        tokens = Array.from(new Set(
+          (tokenRows || [])
+            .filter((r) => r.app === "dusmint_vendor" && r.user_id && !vendorUserIds.has(r.user_id) && r.token)
             .map((r) => r.token)
         ));
       }
@@ -159,7 +221,7 @@ export async function fcmRoutes(app: FastifyInstance) {
    */
   app.post("/push/fcm-register", { preHandler: [authGuard] }, async (request, reply) => {
     const userId = request.user!.id;
-    const { token, platform } = FcmRegisterSchema.parse(request.body);
+    const { token, platform, app } = FcmRegisterSchema.parse(request.body);
 
     // Upsert latest token for this user and device
     const { error } = await supabaseAdmin
@@ -169,6 +231,7 @@ export async function fcmRoutes(app: FastifyInstance) {
           user_id: userId,
           token,
           platform,
+          app: app || "riksho",
           token_type: "fcm",
           updated_at: new Date().toISOString(),
         },

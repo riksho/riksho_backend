@@ -90,6 +90,106 @@ export async function adminRoutes(app: FastifyInstance) {
     return incompleteUsers;
   });
 
+  // ==================== DUSMINT PARTNERS & LEADS ====================
+
+  /**
+   * GET /admin/dusmint/partners — Onboarded DusMint vendors
+   */
+  app.get("/admin/dusmint/partners", guard, async (req) => {
+    const { status = "all", q } = req.query as any;
+
+    let query = supabaseAdmin
+      .from("vendors")
+      .select("*, clusters(name, city)")
+      .order("created_at", { ascending: false });
+
+    if (status !== "all") {
+      query = query.eq("status", status);
+    }
+
+    if (q) {
+      query = query.or(`name.ilike.%${q}%,owner_name.ilike.%${q}%,owner_phone.ilike.%${q}%`);
+    }
+
+    const { data, error } = await query;
+    if (error) {
+      logger.error({ err: error }, "Failed to fetch DusMint partners");
+      return [];
+    }
+    return data || [];
+  });
+
+  /**
+   * GET /admin/dusmint/leads — Potential DusMint partners (phone entered / OTP verified but onboarding incomplete)
+   */
+  app.get("/admin/dusmint/leads", guard, async () => {
+    try {
+      // 1. Get all onboarded vendor phones and auth IDs
+      const { data: vendors } = await supabaseAdmin.from("vendors").select("owner_phone, auth_user_id");
+      const existingPhones = new Set(
+        (vendors || []).map((v) => v.owner_phone?.replace(/\D/g, "").slice(-10)).filter(Boolean)
+      );
+      const existingAuthIds = new Set(
+        (vendors || []).map((v) => v.auth_user_id).filter(Boolean)
+      );
+
+      // 2. Get pending OTP entries (drop-offs at phone input stage)
+      const { data: pendingOtps } = await supabaseAdmin
+        .from("dusmint_pending_otps")
+        .select("phone, created_at, expires_at")
+        .order("created_at", { ascending: false });
+
+      // 3. Get auth users whose metadata has app: "dusmint"
+      const { data: usersData } = await supabaseAdmin.auth.admin.listUsers({ perPage: 1000 });
+      const dusmintAuthUsers = (usersData?.users || []).filter(
+        (u) => u.user_metadata?.app === "dusmint" || (u as any).raw_user_meta_data?.app === "dusmint"
+      );
+
+      const leadsMap = new Map<string, any>();
+
+      // Stage A: Phone Inputted / OTP Sent (drop-off before OTP verification)
+      for (const p of pendingOtps || []) {
+        if (!p.phone) continue;
+        const digits = p.phone.replace(/\D/g, "").slice(-10);
+        if (!existingPhones.has(digits)) {
+          leadsMap.set(digits, {
+            id: `otp-${digits}`,
+            phone: p.phone,
+            stage: "OTP Requested (Not Verified)",
+            stageCode: "otp_pending",
+            created_at: p.created_at,
+            last_active: p.created_at,
+            has_verified_otp: false,
+          });
+        }
+      }
+
+      // Stage B: OTP Verified / Dropped at Onboarding (drop-off during 4-step onboarding form)
+      for (const u of dusmintAuthUsers) {
+        if (!u.phone) continue;
+        const digits = u.phone.replace(/\D/g, "").slice(-10);
+        if (!existingPhones.has(digits) && !existingAuthIds.has(u.id)) {
+          leadsMap.set(digits, {
+            id: u.id,
+            phone: u.phone,
+            stage: "OTP Verified (Incomplete Onboarding)",
+            stageCode: "onboarding_pending",
+            created_at: u.created_at,
+            last_active: u.last_sign_in_at || u.created_at,
+            has_verified_otp: true,
+          });
+        }
+      }
+
+      return Array.from(leadsMap.values()).sort(
+        (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+      );
+    } catch (err: any) {
+      logger.error({ err }, "Failed to fetch DusMint partner leads");
+      return [];
+    }
+  });
+
   app.get("/admin/drivers/:id", guard, async (req, reply) => {
     const { id } = req.params as { id: string };
     const { data, error } = await supabaseAdmin
