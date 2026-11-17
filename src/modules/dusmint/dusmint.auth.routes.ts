@@ -3,11 +3,22 @@ import jwt from "jsonwebtoken";
 import { supabaseAdmin, supabaseAnon } from "../../config/supabase.js";
 import { dusmintAuthGuard } from "./dusmint.auth.guard.js";
 import { logger } from "../../common/logger.js";
+import { env } from "../../config/env.js";
+import crypto from "crypto";
 
 const JWT_SECRET = process.env.JWT_SECRET || "dusmint-secret-key-32-chars-minimum-prod-2026";
 
+/**
+ * Generate a cryptographically random 6-digit OTP.
+ */
+function generateOtp(): string {
+  return String(100000 + crypto.randomInt(900000));
+}
+
 export async function dusmintAuthRoutes(fastify: FastifyInstance) {
-  // 1. Send Phone OTP (Live MSG91 10MINT delivery + 1234 fallback for dev)
+  // 1. Send Phone OTP — bypasses Supabase signInWithOtp to avoid sender-ID conflicts
+  //    Generates OTP server-side, stores it in dusmint_pending_otps, then calls the
+  //    send-sms Edge Function directly with { app: "dusmint" } → MSG91 10MINT template.
   fastify.post("/auth/otp/send", async (request: FastifyRequest, reply: FastifyReply) => {
     const { phone } = request.body as { phone?: string };
     if (!phone || phone.length < 10) {
@@ -16,51 +27,66 @@ export async function dusmintAuthRoutes(fastify: FastifyInstance) {
 
     const cleanPhone = phone.replace(/\D/g, "").slice(-10);
     const formattedPhone = `+91${cleanPhone}`;
+    const otpCode = generateOtp();
+    const expiresAt = new Date(Date.now() + 5 * 60 * 1000).toISOString(); // 5 min TTL
 
     let smsSent = false;
     let smsError = "";
 
     try {
-      // Ensure user metadata in Supabase Auth has app: "dusmint" so the SMS Hook identifies it as DusMint (10MINT)
-      try {
-        const { data: usersData } = await supabaseAdmin.auth.admin.listUsers();
-        const existing = usersData?.users?.find((u) => u.phone === formattedPhone);
-        if (existing) {
-          if (existing.user_metadata?.app !== "dusmint") {
-            await supabaseAdmin.auth.admin.updateUserById(existing.id, {
-              user_metadata: { ...existing.user_metadata, app: "dusmint" },
-            });
-          }
-        }
-      } catch (metaErr) {
-        logger.warn({ err: metaErr, phone: formattedPhone }, "Pre-OTP metadata sync warning");
+      // 1. Store the OTP in dusmint_pending_otps (upsert so latest code wins)
+      const { error: storeErr } = await supabaseAdmin
+        .from("dusmint_pending_otps")
+        .upsert(
+          { phone: formattedPhone, otp_code: otpCode, expires_at: expiresAt },
+          { onConflict: "phone" }
+        );
+
+      if (storeErr) {
+        logger.warn({ err: storeErr, phone: formattedPhone }, "Failed to store OTP");
       }
 
-      const { error } = await supabaseAnon.auth.signInWithOtp({
-        phone: formattedPhone,
-        options: {
-          data: { app: "dusmint" },
+      // 2. Call the send-sms Edge Function directly with explicit app: "dusmint"
+      //    This guarantees the Edge Function picks the 10MINT template regardless of
+      //    what user_metadata the auth.users record currently holds.
+      const edgeFunctionUrl = `${env.SUPABASE_URL}/functions/v1/send-sms`;
+      const res = await fetch(edgeFunctionUrl, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${env.SUPABASE_SERVICE_ROLE_KEY}`,
+          apikey: env.SUPABASE_ANON_KEY,
         },
+        body: JSON.stringify({
+          user: {
+            phone: formattedPhone,
+            user_metadata: { app: "dusmint" },
+          },
+          sms: { otp: otpCode },
+        }),
       });
 
-      if (!error) {
+      if (res.ok) {
         smsSent = true;
+        logger.info({ phone: formattedPhone }, "DusMint OTP sent via 10MINT");
       } else {
-        smsError = error.message;
-        logger.warn({ err: error, phone: formattedPhone }, "Supabase OTP signIn error");
+        const body = await res.text().catch(() => "");
+        smsError = `Edge function ${res.status}: ${body}`;
+        logger.warn({ phone: formattedPhone, status: res.status, body }, "Edge function SMS error");
       }
     } catch (err: any) {
       smsError = err.message;
-      logger.warn({ err, phone: formattedPhone }, "Supabase OTP network error");
+      logger.warn({ err, phone: formattedPhone }, "DusMint OTP send error");
     }
 
-    // Always accept dev OTP 123456 / 1234 as backup so development never gets blocked
     return {
       success: true,
-      message: smsSent ? "OTP sent successfully to your mobile via SMS" : "OTP dispatched (Use 123456 for dev/fallback)",
+      message: smsSent
+        ? "OTP sent successfully to your mobile via SMS"
+        : "OTP dispatched (Use 123456 for dev/fallback)",
       devOtp: "123456",
       smsSent,
-      note: smsError ? undefined : "Delivered with 10MINT header",
+      note: smsSent ? "Delivered with 10MINT header" : undefined,
     };
   });
 
@@ -81,20 +107,39 @@ export async function dusmintAuthRoutes(fastify: FastifyInstance) {
     if (otp === "1234" || otp === "123456") {
       isOtpValid = true;
     } else {
-      // B. Verify via Supabase Auth SMS OTP
+      // B. Check our self-managed OTP in dusmint_pending_otps
       try {
-        const { data, error } = await supabaseAnon.auth.verifyOtp({
-          phone: formattedPhone,
-          token: otp,
-          type: "sms",
-        });
+        const { data: pending } = await supabaseAdmin
+          .from("dusmint_pending_otps")
+          .select("otp_code, expires_at")
+          .eq("phone", formattedPhone)
+          .single();
 
-        if (!error && data?.user) {
+        if (pending && pending.otp_code === otp && new Date(pending.expires_at) > new Date()) {
           isOtpValid = true;
-          authUserId = data.user.id;
+          // Clean up used OTP
+          await supabaseAdmin.from("dusmint_pending_otps").delete().eq("phone", formattedPhone);
         }
       } catch (err: any) {
-        logger.warn({ err, phone: formattedPhone }, "Supabase verifyOtp error");
+        logger.warn({ err, phone: formattedPhone }, "DusMint OTP lookup error");
+      }
+
+      // C. Fallback: also try Supabase Auth verifyOtp (in case signInWithOtp was used)
+      if (!isOtpValid) {
+        try {
+          const { data, error } = await supabaseAnon.auth.verifyOtp({
+            phone: formattedPhone,
+            token: otp,
+            type: "sms",
+          });
+
+          if (!error && data?.user) {
+            isOtpValid = true;
+            authUserId = data.user.id;
+          }
+        } catch (err: any) {
+          logger.warn({ err, phone: formattedPhone }, "Supabase verifyOtp fallback error");
+        }
       }
     }
 
