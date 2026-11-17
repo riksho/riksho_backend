@@ -1,6 +1,7 @@
 -- =============================================================================
 -- DUSMINT -> RIKSHO SUPABASE CONSOLIDATED MIGRATION SCRIPT
--- Single execution file: Run directly in Supabase SQL Editor
+-- Single execution file: 100% idempotent (safe to re-run)
+-- Run directly in Supabase SQL Editor
 -- =============================================================================
 
 
@@ -33,7 +34,6 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
-
 -- >>> END OF 001_extensions.sql <<<
 
 -- >>> START OF 002_users_and_auth.sql <<<
@@ -45,7 +45,7 @@ $$ LANGUAGE plpgsql;
 -- =============================================================================
 
 -- Customer profile (linked to Supabase Auth user via auth.users.id)
-CREATE TABLE profiles (
+CREATE TABLE IF NOT EXISTS profiles (
     id          UUID PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE,
     phone       TEXT NOT NULL UNIQUE,
     name        TEXT,
@@ -64,7 +64,7 @@ COMMENT ON TABLE profiles IS 'Extended customer profile linked to Supabase Auth 
 COMMENT ON COLUMN profiles.trust_tier IS '0=new/prepaid only, 1+=UOD eligible, increments with reliable orders';
 
 -- Delivery addresses
-CREATE TABLE addresses (
+CREATE TABLE IF NOT EXISTS addresses (
     id          UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     user_id     UUID NOT NULL REFERENCES profiles(id) ON DELETE CASCADE,
     label       TEXT DEFAULT 'Home',  -- Home, Work, Other
@@ -113,7 +113,6 @@ CREATE POLICY addresses_insert ON addresses FOR INSERT WITH CHECK (auth.uid() = 
 CREATE POLICY addresses_update ON addresses FOR UPDATE USING (auth.uid() = user_id);
 CREATE POLICY addresses_delete ON addresses FOR DELETE USING (auth.uid() = user_id);
 
-
 -- >>> END OF 002_users_and_auth.sql <<<
 
 -- >>> START OF 003_clusters_and_geography.sql <<<
@@ -126,7 +125,7 @@ CREATE POLICY addresses_delete ON addresses FOR DELETE USING (auth.uid() = user_
 
 CREATE TYPE cluster_status AS ENUM ('active', 'paused', 'closed');
 
-CREATE TABLE clusters (
+CREATE TABLE IF NOT EXISTS clusters (
     id          UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     name        TEXT NOT NULL,              -- "Salt Lake Sector V", "Park Street"
     city        TEXT NOT NULL,              -- "Kolkata"
@@ -156,7 +155,6 @@ ALTER TABLE addresses
 ALTER TABLE clusters ENABLE ROW LEVEL SECURITY;
 CREATE POLICY clusters_select ON clusters FOR SELECT USING (true);
 
-
 -- >>> END OF 003_clusters_and_geography.sql <<<
 
 -- >>> START OF 004_vendors.sql <<<
@@ -166,13 +164,16 @@ CREATE POLICY clusters_select ON clusters FOR SELECT USING (true);
 -- Anchor vendor (seller) profiles and onboarding data
 -- =============================================================================
 
-CREATE TYPE vendor_status AS ENUM ('pending', 'verified', 'suspended', 'rejected');
-CREATE TYPE vendor_category AS ENUM (
+CREATE TYPE vendor_status AS ENUM ('pending', 'verified', 'suspended', 'rejected');DO  BEGIN
+    CREATE TYPE vendor_category AS ENUM (
     'vegetables', 'fruits', 'meat_poultry', 'seafood',
     'dairy', 'groceries', 'bakery', 'household'
 );
+EXCEPTION
+    WHEN duplicate_object THEN NULL;
+END ;
 
-CREATE TABLE vendors (
+CREATE TABLE IF NOT EXISTS vendors (
     id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     auth_user_id    UUID REFERENCES auth.users(id) ON DELETE SET NULL,  -- Supabase Auth link
     name            TEXT NOT NULL,              -- Shop name
@@ -232,7 +233,6 @@ CREATE POLICY vendors_public_select ON vendors
 CREATE POLICY vendors_own_update ON vendors
     FOR UPDATE USING (auth.uid() = auth_user_id);
 
-
 -- >>> END OF 004_vendors.sql <<<
 
 -- >>> START OF 005_catalogue.sql <<<
@@ -243,7 +243,7 @@ CREATE POLICY vendors_own_update ON vendors
 -- =============================================================================
 
 -- Categories table (maps to the vendor_category enum but adds display info)
-CREATE TABLE categories (
+CREATE TABLE IF NOT EXISTS categories (
     id          UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     slug        TEXT NOT NULL UNIQUE,           -- 'vegetables', 'fruits', etc.
     name_en     TEXT NOT NULL,
@@ -269,7 +269,7 @@ INSERT INTO categories (slug, name_en, name_hi, sort_order) VALUES
     ('household', 'Household', 'घरेलू सामान', 8);
 
 -- Items (products listed by vendors)
-CREATE TABLE items (
+CREATE TABLE IF NOT EXISTS items (
     id          UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     vendor_id   UUID NOT NULL REFERENCES vendors(id) ON DELETE CASCADE,
     category_id UUID NOT NULL REFERENCES categories(id),
@@ -320,7 +320,7 @@ CREATE TRIGGER items_search_text
     FOR EACH ROW EXECUTE FUNCTION items_search_text_trigger();
 
 -- Daily price bands (set by admin/ops each morning)
-CREATE TABLE daily_price_bands (
+CREATE TABLE IF NOT EXISTS daily_price_bands (
     id          UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     category_id UUID NOT NULL REFERENCES categories(id),
     cluster_id  UUID NOT NULL REFERENCES clusters(id),
@@ -357,7 +357,6 @@ CREATE POLICY items_vendor_update ON items FOR UPDATE
 -- Price bands: public read, admin write (handled by service role)
 CREATE POLICY price_bands_select ON daily_price_bands FOR SELECT USING (true);
 
-
 -- >>> END OF 005_catalogue.sql <<<
 
 -- >>> START OF 006_slots.sql <<<
@@ -368,7 +367,7 @@ CREATE POLICY price_bands_select ON daily_price_bands FOR SELECT USING (true);
 -- Morning (7-10 am) and Evening (5-8 pm) with cutoff times and capacity
 -- =============================================================================
 
-CREATE TABLE slots (
+CREATE TABLE IF NOT EXISTS slots (
     id          UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     cluster_id  UUID NOT NULL REFERENCES clusters(id) ON DELETE CASCADE,
     slot_date   DATE NOT NULL,
@@ -393,7 +392,6 @@ COMMENT ON COLUMN slots.booked IS 'Number of orders currently booked in this slo
 ALTER TABLE slots ENABLE ROW LEVEL SECURITY;
 CREATE POLICY slots_select ON slots FOR SELECT USING (true);
 
-
 -- >>> END OF 006_slots.sql <<<
 
 -- >>> START OF 007_orders.sql <<<
@@ -416,12 +414,14 @@ CREATE TYPE order_status AS ENUM (
     'cancelled',
     'rejected',
     'failed_delivery'
-);
-
-CREATE TYPE payment_mode AS ENUM ('prepaid', 'uod');  -- UOD = UPI on Delivery
+);DO  BEGIN
+    CREATE TYPE payment_mode AS ENUM ('prepaid', 'uod');
+EXCEPTION
+    WHEN duplicate_object THEN NULL;
+END ;  -- UOD = UPI on Delivery
 CREATE TYPE substitution_pref AS ENUM ('replace', 'remove');
 
-CREATE TABLE orders (
+CREATE TABLE IF NOT EXISTS orders (
     id                  UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     order_number        TEXT NOT NULL UNIQUE,     -- Human-readable: DM-20261026-A1B2
     user_id             UUID NOT NULL REFERENCES profiles(id),
@@ -472,7 +472,7 @@ CREATE TYPE vendor_part_status AS ENUM (
     'partial'       -- Some items unavailable
 );
 
-CREATE TABLE order_vendor_parts (
+CREATE TABLE IF NOT EXISTS order_vendor_parts (
     id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     order_id        UUID NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
     vendor_id       UUID NOT NULL REFERENCES vendors(id),
@@ -506,7 +506,7 @@ CREATE TRIGGER order_vendor_parts_updated_at
 -- Order items: individual products within a vendor part
 CREATE TYPE order_item_status AS ENUM ('included', 'unavailable', 'substituted');
 
-CREATE TABLE order_items (
+CREATE TABLE IF NOT EXISTS order_items (
     id                  UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     order_vendor_part_id UUID NOT NULL REFERENCES order_vendor_parts(id) ON DELETE CASCADE,
     item_id             UUID NOT NULL REFERENCES items(id),
@@ -546,7 +546,6 @@ CREATE POLICY ovp_vendor_update ON order_vendor_parts
 CREATE POLICY oi_select ON order_items
     FOR SELECT USING (true);  -- Filtered via joins in the API
 
-
 -- >>> END OF 007_orders.sql <<<
 
 -- >>> START OF 008_payments.sql <<<
@@ -563,11 +562,13 @@ CREATE TYPE payment_status AS ENUM (
     'failed',
     'refunded',
     'partially_refunded'
-);
+);DO  BEGIN
+    CREATE TYPE payment_method AS ENUM ('upi', 'card', 'netbanking', 'uod_qr');
+EXCEPTION
+    WHEN duplicate_object THEN NULL;
+END ;
 
-CREATE TYPE payment_method AS ENUM ('upi', 'card', 'netbanking', 'uod_qr');
-
-CREATE TABLE payments (
+CREATE TABLE IF NOT EXISTS payments (
     id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     order_id        UUID NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
     mode            payment_mode NOT NULL,          -- prepaid or uod
@@ -601,10 +602,13 @@ CREATE TRIGGER payments_updated_at
     FOR EACH ROW EXECUTE FUNCTION update_updated_at();
 
 -- Refunds table (separate from payments for auditability)
-CREATE TYPE refund_status AS ENUM ('pending', 'processed', 'failed');
-CREATE TYPE refund_method AS ENUM ('original', 'credit');  -- original payment method or promo credit
+CREATE TYPE refund_status AS ENUM ('pending', 'processed', 'failed');DO  BEGIN
+    CREATE TYPE refund_method AS ENUM ('original', 'credit');
+EXCEPTION
+    WHEN duplicate_object THEN NULL;
+END ;  -- original payment method or promo credit
 
-CREATE TABLE refunds (
+CREATE TABLE IF NOT EXISTS refunds (
     id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     payment_id      UUID NOT NULL REFERENCES payments(id),
     order_id        UUID NOT NULL REFERENCES orders(id),
@@ -635,7 +639,6 @@ CREATE POLICY refunds_customer_select ON refunds
         order_id IN (SELECT id FROM orders WHERE user_id = auth.uid())
     );
 
-
 -- >>> END OF 008_payments.sql <<<
 
 -- >>> START OF 009_claims.sql <<<
@@ -654,9 +657,8 @@ CREATE TYPE claim_status AS ENUM (
     'approved',
     'rejected',
     'refunded'
-);
-
-CREATE TYPE claim_reason AS ENUM (
+);DO  BEGIN
+    CREATE TYPE claim_reason AS ENUM (
     'weight_short',
     'quality_poor',
     'wrong_item',
@@ -664,8 +666,11 @@ CREATE TYPE claim_reason AS ENUM (
     'damaged',
     'other'
 );
+EXCEPTION
+    WHEN duplicate_object THEN NULL;
+END ;
 
-CREATE TABLE claims (
+CREATE TABLE IF NOT EXISTS claims (
     id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     order_id        UUID NOT NULL REFERENCES orders(id),
     user_id         UUID NOT NULL REFERENCES profiles(id),
@@ -708,7 +713,7 @@ CREATE TRIGGER claims_updated_at
     FOR EACH ROW EXECUTE FUNCTION update_updated_at();
 
 -- Claim items: which specific items in the order had issues
-CREATE TABLE claim_items (
+CREATE TABLE IF NOT EXISTS claim_items (
     id          UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     claim_id    UUID NOT NULL REFERENCES claims(id) ON DELETE CASCADE,
     order_item_id UUID NOT NULL REFERENCES order_items(id),
@@ -733,7 +738,6 @@ CREATE POLICY claim_items_select ON claim_items
     FOR SELECT USING (
         claim_id IN (SELECT id FROM claims WHERE user_id = auth.uid())
     );
-
 
 -- >>> END OF 009_claims.sql <<<
 
@@ -843,7 +847,6 @@ DROP POLICY IF EXISTS "Service role manages settlement ledger" ON vendor_settlem
 CREATE POLICY "Service role manages settlement ledger"
     ON vendor_settlement_ledger FOR ALL
     USING (auth.role() = 'service_role');
-
 
 -- >>> END OF 010_payouts_and_settlements.sql <<<
 
@@ -968,7 +971,6 @@ CREATE POLICY "Service role manages bag pickup verifications"
     ON bag_pickup_verifications FOR ALL
     USING (auth.role() = 'service_role');
 
-
 -- >>> END OF 011_delivery_tasks_and_fleet.sql <<<
 
 -- >>> START OF 012_notifications_and_audit.sql <<<
@@ -1043,7 +1045,6 @@ DROP POLICY IF EXISTS "Service role manages audit logs" ON audit_logs;
 CREATE POLICY "Service role manages audit logs"
     ON audit_logs FOR ALL
     USING (auth.role() = 'service_role');
-
 
 -- >>> END OF 012_notifications_and_audit.sql <<<
 
@@ -1176,7 +1177,6 @@ CREATE TRIGGER trigger_vendor_part_status_change
     FOR EACH ROW
     WHEN (NEW.status = 'ready')
     EXECUTE FUNCTION evaluate_order_packing_completion();
-
 
 -- >>> END OF 013_functions_and_triggers.sql <<<
 
@@ -1465,8 +1465,6 @@ $$;
 
 COMMENT ON FUNCTION place_order_atomic IS 'Atomically creates a multi-vendor customer order, splits into vendor parts, adds line items, and creates delivery tracking task.';
 
-
-
 -- >>> END OF 014_place_order_atomic_rpc.sql <<<
 
 -- >>> START OF 015_customer_orders_views_and_rpc.sql <<<
@@ -1678,8 +1676,6 @@ BEGIN
 END;
 $$;
 
-
-
 -- >>> END OF 015_customer_orders_views_and_rpc.sql <<<
 
 -- >>> START OF 016_order_lifecycle_and_seals.sql <<<
@@ -1830,8 +1826,6 @@ BEGIN
 END;
 $$;
 
-
-
 -- >>> END OF 016_order_lifecycle_and_seals.sql <<<
 
 -- >>> START OF 017_supabase_realtime_and_rls.sql <<<
@@ -1922,8 +1916,6 @@ GRANT EXECUTE ON FUNCTION verify_order_seal TO authenticated, anon;
 GRANT EXECUTE ON FUNCTION cancel_customer_order TO authenticated, anon;
 GRANT EXECUTE ON FUNCTION update_rider_live_location TO authenticated, anon;
 
-
-
 -- >>> END OF 017_supabase_realtime_and_rls.sql <<<
 
 -- >>> START OF 018_performance_indexes.sql <<<
@@ -1980,8 +1972,6 @@ CREATE INDEX IF NOT EXISTS idx_addresses_user_default
 
 CREATE INDEX IF NOT EXISTS idx_slots_cluster_active 
     ON slots (cluster_id, is_active);
-
-
 
 -- >>> END OF 018_performance_indexes.sql <<<
 
@@ -2136,8 +2126,6 @@ GRANT EXECUTE ON FUNCTION get_user_addresses(UUID) TO authenticated, anon;
 GRANT EXECUTE ON FUNCTION save_user_address(UUID, TEXT, TEXT, TEXT, TEXT, TEXT, DOUBLE PRECISION, DOUBLE PRECISION, BOOLEAN, UUID) TO authenticated, anon;
 GRANT EXECUTE ON FUNCTION delete_user_address(UUID, UUID) TO authenticated, anon;
 
-
-
 -- >>> END OF 019_user_addresses_rpc.sql <<<
 
 -- >>> START OF 020_riksho_fleet_bridge.sql <<<
@@ -2239,6 +2227,5 @@ END;
 $$;
 
 COMMENT ON FUNCTION public.bridge_dusmint_order_to_riksho_ride IS 'Bridges packed DusMint orders directly to Riksho Buddy drivers as quick delivery rides';
-
 
 -- >>> END OF 020_riksho_fleet_bridge.sql <<<

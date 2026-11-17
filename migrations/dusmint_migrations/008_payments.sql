@@ -10,11 +10,13 @@ CREATE TYPE payment_status AS ENUM (
     'failed',
     'refunded',
     'partially_refunded'
-);
+);DO  BEGIN
+    CREATE TYPE payment_method AS ENUM ('upi', 'card', 'netbanking', 'uod_qr');
+EXCEPTION
+    WHEN duplicate_object THEN NULL;
+END ;
 
-CREATE TYPE payment_method AS ENUM ('upi', 'card', 'netbanking', 'uod_qr');
-
-CREATE TABLE payments (
+CREATE TABLE IF NOT EXISTS payments (
     id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     order_id        UUID NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
     mode            payment_mode NOT NULL,          -- prepaid or uod
@@ -48,10 +50,13 @@ CREATE TRIGGER payments_updated_at
     FOR EACH ROW EXECUTE FUNCTION update_updated_at();
 
 -- Refunds table (separate from payments for auditability)
-CREATE TYPE refund_status AS ENUM ('pending', 'processed', 'failed');
-CREATE TYPE refund_method AS ENUM ('original', 'credit');  -- original payment method or promo credit
+CREATE TYPE refund_status AS ENUM ('pending', 'processed', 'failed');DO  BEGIN
+    CREATE TYPE refund_method AS ENUM ('original', 'credit');
+EXCEPTION
+    WHEN duplicate_object THEN NULL;
+END ;  -- original payment method or promo credit
 
-CREATE TABLE refunds (
+CREATE TABLE IF NOT EXISTS refunds (
     id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     payment_id      UUID NOT NULL REFERENCES payments(id),
     order_id        UUID NOT NULL REFERENCES orders(id),

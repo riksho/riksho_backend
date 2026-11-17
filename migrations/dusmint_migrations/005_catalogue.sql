@@ -4,7 +4,7 @@
 -- =============================================================================
 
 -- Categories table (maps to the vendor_category enum but adds display info)
-CREATE TABLE categories (
+CREATE TABLE IF NOT EXISTS categories (
     id          UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     slug        TEXT NOT NULL UNIQUE,           -- 'vegetables', 'fruits', etc.
     name_en     TEXT NOT NULL,
@@ -30,7 +30,7 @@ INSERT INTO categories (slug, name_en, name_hi, sort_order) VALUES
     ('household', 'Household', 'घरेलू सामान', 8);
 
 -- Items (products listed by vendors)
-CREATE TABLE items (
+CREATE TABLE IF NOT EXISTS items (
     id          UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     vendor_id   UUID NOT NULL REFERENCES vendors(id) ON DELETE CASCADE,
     category_id UUID NOT NULL REFERENCES categories(id),
@@ -81,7 +81,7 @@ CREATE TRIGGER items_search_text
     FOR EACH ROW EXECUTE FUNCTION items_search_text_trigger();
 
 -- Daily price bands (set by admin/ops each morning)
-CREATE TABLE daily_price_bands (
+CREATE TABLE IF NOT EXISTS daily_price_bands (
     id          UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     category_id UUID NOT NULL REFERENCES categories(id),
     cluster_id  UUID NOT NULL REFERENCES clusters(id),

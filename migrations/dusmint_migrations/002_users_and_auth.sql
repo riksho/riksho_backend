@@ -5,7 +5,7 @@
 -- =============================================================================
 
 -- Customer profile (linked to Supabase Auth user via auth.users.id)
-CREATE TABLE profiles (
+CREATE TABLE IF NOT EXISTS profiles (
     id          UUID PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE,
     phone       TEXT NOT NULL UNIQUE,
     name        TEXT,
@@ -24,7 +24,7 @@ COMMENT ON TABLE profiles IS 'Extended customer profile linked to Supabase Auth 
 COMMENT ON COLUMN profiles.trust_tier IS '0=new/prepaid only, 1+=UOD eligible, increments with reliable orders';
 
 -- Delivery addresses
-CREATE TABLE addresses (
+CREATE TABLE IF NOT EXISTS addresses (
     id          UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     user_id     UUID NOT NULL REFERENCES profiles(id) ON DELETE CASCADE,
     label       TEXT DEFAULT 'Home',  -- Home, Work, Other

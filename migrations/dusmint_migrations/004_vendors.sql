@@ -3,13 +3,16 @@
 -- Anchor vendor (seller) profiles and onboarding data
 -- =============================================================================
 
-CREATE TYPE vendor_status AS ENUM ('pending', 'verified', 'suspended', 'rejected');
-CREATE TYPE vendor_category AS ENUM (
+CREATE TYPE vendor_status AS ENUM ('pending', 'verified', 'suspended', 'rejected');DO  BEGIN
+    CREATE TYPE vendor_category AS ENUM (
     'vegetables', 'fruits', 'meat_poultry', 'seafood',
     'dairy', 'groceries', 'bakery', 'household'
 );
+EXCEPTION
+    WHEN duplicate_object THEN NULL;
+END ;
 
-CREATE TABLE vendors (
+CREATE TABLE IF NOT EXISTS vendors (
     id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     auth_user_id    UUID REFERENCES auth.users(id) ON DELETE SET NULL,  -- Supabase Auth link
     name            TEXT NOT NULL,              -- Shop name

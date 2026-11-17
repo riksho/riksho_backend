@@ -6,7 +6,7 @@
 
 CREATE TYPE cluster_status AS ENUM ('active', 'paused', 'closed');
 
-CREATE TABLE clusters (
+CREATE TABLE IF NOT EXISTS clusters (
     id          UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     name        TEXT NOT NULL,              -- "Salt Lake Sector V", "Park Street"
     city        TEXT NOT NULL,              -- "Kolkata"

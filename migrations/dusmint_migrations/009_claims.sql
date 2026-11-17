@@ -12,9 +12,8 @@ CREATE TYPE claim_status AS ENUM (
     'approved',
     'rejected',
     'refunded'
-);
-
-CREATE TYPE claim_reason AS ENUM (
+);DO  BEGIN
+    CREATE TYPE claim_reason AS ENUM (
     'weight_short',
     'quality_poor',
     'wrong_item',
@@ -22,8 +21,11 @@ CREATE TYPE claim_reason AS ENUM (
     'damaged',
     'other'
 );
+EXCEPTION
+    WHEN duplicate_object THEN NULL;
+END ;
 
-CREATE TABLE claims (
+CREATE TABLE IF NOT EXISTS claims (
     id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     order_id        UUID NOT NULL REFERENCES orders(id),
     user_id         UUID NOT NULL REFERENCES profiles(id),
@@ -66,7 +68,7 @@ CREATE TRIGGER claims_updated_at
     FOR EACH ROW EXECUTE FUNCTION update_updated_at();
 
 -- Claim items: which specific items in the order had issues
-CREATE TABLE claim_items (
+CREATE TABLE IF NOT EXISTS claim_items (
     id          UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     claim_id    UUID NOT NULL REFERENCES claims(id) ON DELETE CASCADE,
     order_item_id UUID NOT NULL REFERENCES order_items(id),

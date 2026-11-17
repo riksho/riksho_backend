@@ -4,7 +4,7 @@
 -- Morning (7-10 am) and Evening (5-8 pm) with cutoff times and capacity
 -- =============================================================================
 
-CREATE TABLE slots (
+CREATE TABLE IF NOT EXISTS slots (
     id          UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     cluster_id  UUID NOT NULL REFERENCES clusters(id) ON DELETE CASCADE,
     slot_date   DATE NOT NULL,

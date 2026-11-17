@@ -16,12 +16,14 @@ CREATE TYPE order_status AS ENUM (
     'cancelled',
     'rejected',
     'failed_delivery'
-);
-
-CREATE TYPE payment_mode AS ENUM ('prepaid', 'uod');  -- UOD = UPI on Delivery
+);DO  BEGIN
+    CREATE TYPE payment_mode AS ENUM ('prepaid', 'uod');
+EXCEPTION
+    WHEN duplicate_object THEN NULL;
+END ;  -- UOD = UPI on Delivery
 CREATE TYPE substitution_pref AS ENUM ('replace', 'remove');
 
-CREATE TABLE orders (
+CREATE TABLE IF NOT EXISTS orders (
     id                  UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     order_number        TEXT NOT NULL UNIQUE,     -- Human-readable: DM-20261026-A1B2
     user_id             UUID NOT NULL REFERENCES profiles(id),
@@ -72,7 +74,7 @@ CREATE TYPE vendor_part_status AS ENUM (
     'partial'       -- Some items unavailable
 );
 
-CREATE TABLE order_vendor_parts (
+CREATE TABLE IF NOT EXISTS order_vendor_parts (
     id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     order_id        UUID NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
     vendor_id       UUID NOT NULL REFERENCES vendors(id),
@@ -106,7 +108,7 @@ CREATE TRIGGER order_vendor_parts_updated_at
 -- Order items: individual products within a vendor part
 CREATE TYPE order_item_status AS ENUM ('included', 'unavailable', 'substituted');
 
-CREATE TABLE order_items (
+CREATE TABLE IF NOT EXISTS order_items (
     id                  UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     order_vendor_part_id UUID NOT NULL REFERENCES order_vendor_parts(id) ON DELETE CASCADE,
     item_id             UUID NOT NULL REFERENCES items(id),
