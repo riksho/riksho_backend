@@ -3,7 +3,12 @@
 -- Anchor vendor (seller) profiles and onboarding data
 -- =============================================================================
 
-CREATE TYPE vendor_status AS ENUM ('pending', 'verified', 'suspended', 'rejected');DO  BEGIN
+DO  BEGIN
+    CREATE TYPE vendor_status AS ENUM ('pending', 'verified', 'suspended', 'rejected');
+EXCEPTION
+    WHEN duplicate_object THEN NULL;
+END ;
+DO  BEGIN
     CREATE TYPE vendor_category AS ENUM (
     'vegetables', 'fruits', 'meat_poultry', 'seafood',
     'dairy', 'groceries', 'bakery', 'household'

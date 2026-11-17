@@ -4,7 +4,8 @@
 -- Supports multi-vendor cart (up to 3 vendors per order)
 -- =============================================================================
 
-CREATE TYPE order_status AS ENUM (
+DO  BEGIN
+    CREATE TYPE order_status AS ENUM (
     'placed',
     'confirmed',
     'packing',
@@ -16,12 +17,21 @@ CREATE TYPE order_status AS ENUM (
     'cancelled',
     'rejected',
     'failed_delivery'
-);DO  BEGIN
+);
+EXCEPTION
+    WHEN duplicate_object THEN NULL;
+END ;
+
+DO  BEGIN
     CREATE TYPE payment_mode AS ENUM ('prepaid', 'uod');
 EXCEPTION
     WHEN duplicate_object THEN NULL;
 END ;  -- UOD = UPI on Delivery
-CREATE TYPE substitution_pref AS ENUM ('replace', 'remove');
+DO  BEGIN
+    CREATE TYPE substitution_pref AS ENUM ('replace', 'remove');
+EXCEPTION
+    WHEN duplicate_object THEN NULL;
+END ;
 
 CREATE TABLE IF NOT EXISTS orders (
     id                  UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
@@ -63,7 +73,8 @@ CREATE TRIGGER orders_updated_at
     FOR EACH ROW EXECUTE FUNCTION update_updated_at();
 
 -- Order vendor parts: one per vendor in a multi-vendor order
-CREATE TYPE vendor_part_status AS ENUM (
+DO  BEGIN
+    CREATE TYPE vendor_part_status AS ENUM (
     'pending',      -- Waiting for vendor to accept
     'accepted',
     'packing',
@@ -73,6 +84,9 @@ CREATE TYPE vendor_part_status AS ENUM (
     'rejected',
     'partial'       -- Some items unavailable
 );
+EXCEPTION
+    WHEN duplicate_object THEN NULL;
+END ;
 
 CREATE TABLE IF NOT EXISTS order_vendor_parts (
     id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
@@ -106,7 +120,11 @@ CREATE TRIGGER order_vendor_parts_updated_at
     FOR EACH ROW EXECUTE FUNCTION update_updated_at();
 
 -- Order items: individual products within a vendor part
-CREATE TYPE order_item_status AS ENUM ('included', 'unavailable', 'substituted');
+DO  BEGIN
+    CREATE TYPE order_item_status AS ENUM ('included', 'unavailable', 'substituted');
+EXCEPTION
+    WHEN duplicate_object THEN NULL;
+END ;
 
 CREATE TABLE IF NOT EXISTS order_items (
     id                  UUID PRIMARY KEY DEFAULT uuid_generate_v4(),

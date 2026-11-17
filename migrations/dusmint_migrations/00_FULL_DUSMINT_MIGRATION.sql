@@ -123,7 +123,11 @@ CREATE POLICY addresses_delete ON addresses FOR DELETE USING (auth.uid() = user_
 -- Each cluster is a ~2 km radius circle around a centre point
 -- =============================================================================
 
-CREATE TYPE cluster_status AS ENUM ('active', 'paused', 'closed');
+DO  BEGIN
+    CREATE TYPE cluster_status AS ENUM ('active', 'paused', 'closed');
+EXCEPTION
+    WHEN duplicate_object THEN NULL;
+END ;
 
 CREATE TABLE IF NOT EXISTS clusters (
     id          UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
@@ -164,7 +168,12 @@ CREATE POLICY clusters_select ON clusters FOR SELECT USING (true);
 -- Anchor vendor (seller) profiles and onboarding data
 -- =============================================================================
 
-CREATE TYPE vendor_status AS ENUM ('pending', 'verified', 'suspended', 'rejected');DO  BEGIN
+DO  BEGIN
+    CREATE TYPE vendor_status AS ENUM ('pending', 'verified', 'suspended', 'rejected');
+EXCEPTION
+    WHEN duplicate_object THEN NULL;
+END ;
+DO  BEGIN
     CREATE TYPE vendor_category AS ENUM (
     'vegetables', 'fruits', 'meat_poultry', 'seafood',
     'dairy', 'groceries', 'bakery', 'household'
@@ -402,7 +411,8 @@ CREATE POLICY slots_select ON slots FOR SELECT USING (true);
 -- Supports multi-vendor cart (up to 3 vendors per order)
 -- =============================================================================
 
-CREATE TYPE order_status AS ENUM (
+DO  BEGIN
+    CREATE TYPE order_status AS ENUM (
     'placed',
     'confirmed',
     'packing',
@@ -414,12 +424,21 @@ CREATE TYPE order_status AS ENUM (
     'cancelled',
     'rejected',
     'failed_delivery'
-);DO  BEGIN
+);
+EXCEPTION
+    WHEN duplicate_object THEN NULL;
+END ;
+
+DO  BEGIN
     CREATE TYPE payment_mode AS ENUM ('prepaid', 'uod');
 EXCEPTION
     WHEN duplicate_object THEN NULL;
 END ;  -- UOD = UPI on Delivery
-CREATE TYPE substitution_pref AS ENUM ('replace', 'remove');
+DO  BEGIN
+    CREATE TYPE substitution_pref AS ENUM ('replace', 'remove');
+EXCEPTION
+    WHEN duplicate_object THEN NULL;
+END ;
 
 CREATE TABLE IF NOT EXISTS orders (
     id                  UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
@@ -461,7 +480,8 @@ CREATE TRIGGER orders_updated_at
     FOR EACH ROW EXECUTE FUNCTION update_updated_at();
 
 -- Order vendor parts: one per vendor in a multi-vendor order
-CREATE TYPE vendor_part_status AS ENUM (
+DO  BEGIN
+    CREATE TYPE vendor_part_status AS ENUM (
     'pending',      -- Waiting for vendor to accept
     'accepted',
     'packing',
@@ -471,6 +491,9 @@ CREATE TYPE vendor_part_status AS ENUM (
     'rejected',
     'partial'       -- Some items unavailable
 );
+EXCEPTION
+    WHEN duplicate_object THEN NULL;
+END ;
 
 CREATE TABLE IF NOT EXISTS order_vendor_parts (
     id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
@@ -504,7 +527,11 @@ CREATE TRIGGER order_vendor_parts_updated_at
     FOR EACH ROW EXECUTE FUNCTION update_updated_at();
 
 -- Order items: individual products within a vendor part
-CREATE TYPE order_item_status AS ENUM ('included', 'unavailable', 'substituted');
+DO  BEGIN
+    CREATE TYPE order_item_status AS ENUM ('included', 'unavailable', 'substituted');
+EXCEPTION
+    WHEN duplicate_object THEN NULL;
+END ;
 
 CREATE TABLE IF NOT EXISTS order_items (
     id                  UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
@@ -555,14 +582,20 @@ CREATE POLICY oi_select ON order_items
 -- Payment records linked to orders (Cashfree gateway)
 -- =============================================================================
 
-CREATE TYPE payment_status AS ENUM (
+DO  BEGIN
+    CREATE TYPE payment_status AS ENUM (
     'pending',
     'authorized',
     'captured',
     'failed',
     'refunded',
     'partially_refunded'
-);DO  BEGIN
+);
+EXCEPTION
+    WHEN duplicate_object THEN NULL;
+END ;
+
+DO  BEGIN
     CREATE TYPE payment_method AS ENUM ('upi', 'card', 'netbanking', 'uod_qr');
 EXCEPTION
     WHEN duplicate_object THEN NULL;
@@ -602,7 +635,12 @@ CREATE TRIGGER payments_updated_at
     FOR EACH ROW EXECUTE FUNCTION update_updated_at();
 
 -- Refunds table (separate from payments for auditability)
-CREATE TYPE refund_status AS ENUM ('pending', 'processed', 'failed');DO  BEGIN
+DO  BEGIN
+    CREATE TYPE refund_status AS ENUM ('pending', 'processed', 'failed');
+EXCEPTION
+    WHEN duplicate_object THEN NULL;
+END ;
+DO  BEGIN
     CREATE TYPE refund_method AS ENUM ('original', 'credit');
 EXCEPTION
     WHEN duplicate_object THEN NULL;
@@ -649,7 +687,8 @@ CREATE POLICY refunds_customer_select ON refunds
 -- Scan-to-open starts a 30-minute claim window
 -- =============================================================================
 
-CREATE TYPE claim_status AS ENUM (
+DO  BEGIN
+    CREATE TYPE claim_status AS ENUM (
     'open',             -- Customer opened the bag (scan)
     'submitted',        -- Claim filed with photo
     'auto_approved',    -- Small amount, auto-decided
@@ -657,7 +696,12 @@ CREATE TYPE claim_status AS ENUM (
     'approved',
     'rejected',
     'refunded'
-);DO  BEGIN
+);
+EXCEPTION
+    WHEN duplicate_object THEN NULL;
+END ;
+
+DO  BEGIN
     CREATE TYPE claim_reason AS ENUM (
     'weight_short',
     'quality_poor',
@@ -760,6 +804,7 @@ $$ LANGUAGE plpgsql;
 
 -- Safely create enum type if not already existing
 DO $$ BEGIN
+    DO  BEGIN
     CREATE TYPE payout_status AS ENUM (
         'pending_delivery',    -- Waiting for customer delivery OTP confirmation
         'eligible',            -- Order delivered, eligible for daily batch payout
@@ -768,6 +813,9 @@ DO $$ BEGIN
         'held',                -- Held due to active quality claim or dispute
         'failed'               -- Transfer attempt failed, queued for retry
     );
+EXCEPTION
+    WHEN duplicate_object THEN NULL;
+END ;
 EXCEPTION
     WHEN duplicate_object THEN NULL;
 END $$;
@@ -859,6 +907,7 @@ CREATE POLICY "Service role manages settlement ledger"
 -- =============================================================================
 
 DO $$ BEGIN
+    DO  BEGIN
     CREATE TYPE delivery_task_status AS ENUM (
         'unassigned',
         'assigned',
@@ -872,6 +921,9 @@ DO $$ BEGIN
         'delivery_failed',
         'cancelled'
     );
+EXCEPTION
+    WHEN duplicate_object THEN NULL;
+END ;
 EXCEPTION
     WHEN duplicate_object THEN NULL;
 END $$;
@@ -982,13 +1034,21 @@ CREATE POLICY "Service role manages bag pickup verifications"
 -- =============================================================================
 
 DO $$ BEGIN
+    DO  BEGIN
     CREATE TYPE notification_channel AS ENUM ('fcm_push', 'sms_msg91', 'whatsapp', 'in_app');
+EXCEPTION
+    WHEN duplicate_object THEN NULL;
+END ;
 EXCEPTION
     WHEN duplicate_object THEN NULL;
 END $$;
 
 DO $$ BEGIN
+    DO  BEGIN
     CREATE TYPE notification_status AS ENUM ('queued', 'sent', 'delivered', 'failed');
+EXCEPTION
+    WHEN duplicate_object THEN NULL;
+END ;
 EXCEPTION
     WHEN duplicate_object THEN NULL;
 END $$;

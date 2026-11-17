@@ -5,6 +5,7 @@
 -- =============================================================================
 
 DO $$ BEGIN
+    DO  BEGIN
     CREATE TYPE delivery_task_status AS ENUM (
         'unassigned',
         'assigned',
@@ -18,6 +19,9 @@ DO $$ BEGIN
         'delivery_failed',
         'cancelled'
     );
+EXCEPTION
+    WHEN duplicate_object THEN NULL;
+END ;
 EXCEPTION
     WHEN duplicate_object THEN NULL;
 END $$;

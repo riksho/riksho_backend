@@ -3,14 +3,20 @@
 -- Payment records linked to orders (Cashfree gateway)
 -- =============================================================================
 
-CREATE TYPE payment_status AS ENUM (
+DO  BEGIN
+    CREATE TYPE payment_status AS ENUM (
     'pending',
     'authorized',
     'captured',
     'failed',
     'refunded',
     'partially_refunded'
-);DO  BEGIN
+);
+EXCEPTION
+    WHEN duplicate_object THEN NULL;
+END ;
+
+DO  BEGIN
     CREATE TYPE payment_method AS ENUM ('upi', 'card', 'netbanking', 'uod_qr');
 EXCEPTION
     WHEN duplicate_object THEN NULL;
@@ -50,7 +56,12 @@ CREATE TRIGGER payments_updated_at
     FOR EACH ROW EXECUTE FUNCTION update_updated_at();
 
 -- Refunds table (separate from payments for auditability)
-CREATE TYPE refund_status AS ENUM ('pending', 'processed', 'failed');DO  BEGIN
+DO  BEGIN
+    CREATE TYPE refund_status AS ENUM ('pending', 'processed', 'failed');
+EXCEPTION
+    WHEN duplicate_object THEN NULL;
+END ;
+DO  BEGIN
     CREATE TYPE refund_method AS ENUM ('original', 'credit');
 EXCEPTION
     WHEN duplicate_object THEN NULL;

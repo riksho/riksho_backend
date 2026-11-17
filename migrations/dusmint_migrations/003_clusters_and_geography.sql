@@ -4,7 +4,11 @@
 -- Each cluster is a ~2 km radius circle around a centre point
 -- =============================================================================
 
-CREATE TYPE cluster_status AS ENUM ('active', 'paused', 'closed');
+DO  BEGIN
+    CREATE TYPE cluster_status AS ENUM ('active', 'paused', 'closed');
+EXCEPTION
+    WHEN duplicate_object THEN NULL;
+END ;
 
 CREATE TABLE IF NOT EXISTS clusters (
     id          UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
