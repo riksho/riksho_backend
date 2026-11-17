@@ -4,7 +4,7 @@
 -- Scan-to-open starts a 30-minute claim window
 -- =============================================================================
 
-DO  BEGIN
+DO $$ BEGIN
     CREATE TYPE claim_status AS ENUM (
     'open',             -- Customer opened the bag (scan)
     'submitted',        -- Claim filed with photo
@@ -16,9 +16,9 @@ DO  BEGIN
 );
 EXCEPTION
     WHEN duplicate_object THEN NULL;
-END ;
+END $$;
 
-DO  BEGIN
+DO $$ BEGIN
     CREATE TYPE claim_reason AS ENUM (
     'weight_short',
     'quality_poor',
@@ -29,7 +29,7 @@ DO  BEGIN
 );
 EXCEPTION
     WHEN duplicate_object THEN NULL;
-END ;
+END $$;
 
 CREATE TABLE IF NOT EXISTS claims (
     id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),

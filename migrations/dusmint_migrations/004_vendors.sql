@@ -3,19 +3,19 @@
 -- Anchor vendor (seller) profiles and onboarding data
 -- =============================================================================
 
-DO  BEGIN
+DO $$ BEGIN
     CREATE TYPE vendor_status AS ENUM ('pending', 'verified', 'suspended', 'rejected');
 EXCEPTION
     WHEN duplicate_object THEN NULL;
-END ;
-DO  BEGIN
+END $$;
+DO $$ BEGIN
     CREATE TYPE vendor_category AS ENUM (
     'vegetables', 'fruits', 'meat_poultry', 'seafood',
     'dairy', 'groceries', 'bakery', 'household'
 );
 EXCEPTION
     WHEN duplicate_object THEN NULL;
-END ;
+END $$;
 
 CREATE TABLE IF NOT EXISTS vendors (
     id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),

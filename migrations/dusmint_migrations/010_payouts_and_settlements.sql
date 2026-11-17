@@ -15,7 +15,6 @@ $$ LANGUAGE plpgsql;
 
 -- Safely create enum type if not already existing
 DO $$ BEGIN
-    DO  BEGIN
     CREATE TYPE payout_status AS ENUM (
         'pending_delivery',    -- Waiting for customer delivery OTP confirmation
         'eligible',            -- Order delivered, eligible for daily batch payout
@@ -24,9 +23,6 @@ DO $$ BEGIN
         'held',                -- Held due to active quality claim or dispute
         'failed'               -- Transfer attempt failed, queued for retry
     );
-EXCEPTION
-    WHEN duplicate_object THEN NULL;
-END ;
 EXCEPTION
     WHEN duplicate_object THEN NULL;
 END $$;

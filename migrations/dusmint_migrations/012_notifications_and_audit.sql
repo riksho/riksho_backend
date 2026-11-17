@@ -5,21 +5,13 @@
 -- =============================================================================
 
 DO $$ BEGIN
-    DO  BEGIN
     CREATE TYPE notification_channel AS ENUM ('fcm_push', 'sms_msg91', 'whatsapp', 'in_app');
-EXCEPTION
-    WHEN duplicate_object THEN NULL;
-END ;
 EXCEPTION
     WHEN duplicate_object THEN NULL;
 END $$;
 
 DO $$ BEGIN
-    DO  BEGIN
     CREATE TYPE notification_status AS ENUM ('queued', 'sent', 'delivered', 'failed');
-EXCEPTION
-    WHEN duplicate_object THEN NULL;
-END ;
 EXCEPTION
     WHEN duplicate_object THEN NULL;
 END $$;
