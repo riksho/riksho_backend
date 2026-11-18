@@ -17,33 +17,15 @@ function generateOtp(): string {
 
 /**
  * Robustly find or create an auth user id for the given phone number.
- * Handles existing Riksho/Dusmint users, pagination in listUsers, and format differences.
+ * Seamlessly handles existing Riksho riders, Riksho drivers, DusMint partners,
+ * DusMint customers, pagination in listUsers, and format differences.
  */
-async function resolveOrCreateAuthUserId(formattedPhone: string, cleanPhone: string): Promise<string> {
-  // 1. Try to find in Supabase Auth via listUsers
-  try {
-    const { data: usersData } = await supabaseAdmin.auth.admin.listUsers({ perPage: 1000 });
-    const match = usersData?.users?.find(
-      (u) => u.phone && u.phone.replace(/\D/g, "").endsWith(cleanPhone)
-    );
-    if (match) return match.id;
-  } catch (err) {
-    logger.warn({ err, cleanPhone }, "listUsers failed during user resolution");
-  }
-
-  // 2. Try to create the user in Supabase Auth if not yet created
-  try {
-    const { data: created } = await supabaseAdmin.auth.admin.createUser({
-      phone: formattedPhone,
-      phone_confirm: true,
-      user_metadata: { phone: formattedPhone, app: "dusmint" },
-    });
-    if (created?.user?.id) return created.user.id;
-  } catch (createErr: any) {
-    logger.warn({ err: createErr, cleanPhone }, "createUser warning during resolution");
-  }
-
-  // 3. Fallback: check profiles table or vendors table
+async function resolveOrCreateAuthUserId(
+  formattedPhone: string,
+  cleanPhone: string,
+  appType?: string
+): Promise<string> {
+  // 1. Check existing profiles table (DusMint customer or partner)
   try {
     const { data: prof } = await supabaseAdmin
       .from("profiles")
@@ -51,8 +33,35 @@ async function resolveOrCreateAuthUserId(formattedPhone: string, cleanPhone: str
       .ilike("phone", `%${cleanPhone}%`)
       .maybeSingle();
     if (prof?.id) return prof.id;
-  } catch {}
+  } catch (err) {
+    logger.warn({ err, cleanPhone }, "profiles table check failed");
+  }
 
+  // 2. Check existing Riksho customer users table
+  try {
+    const { data: rikshoUser } = await supabaseAdmin
+      .from("users")
+      .select("id")
+      .ilike("phone", `%${cleanPhone}%`)
+      .maybeSingle();
+    if (rikshoUser?.id) return rikshoUser.id;
+  } catch (err) {
+    logger.warn({ err, cleanPhone }, "riksho users table check failed");
+  }
+
+  // 3. Check existing Riksho drivers table
+  try {
+    const { data: driver } = await supabaseAdmin
+      .from("drivers")
+      .select("id")
+      .ilike("phone", `%${cleanPhone}%`)
+      .maybeSingle();
+    if (driver?.id) return driver.id;
+  } catch (err) {
+    logger.warn({ err, cleanPhone }, "riksho drivers table check failed");
+  }
+
+  // 4. Check existing vendors table (DusMint vendor)
   try {
     const { data: v } = await supabaseAdmin
       .from("vendors")
@@ -60,9 +69,70 @@ async function resolveOrCreateAuthUserId(formattedPhone: string, cleanPhone: str
       .ilike("owner_phone", `%${cleanPhone}%`)
       .maybeSingle();
     if (v?.auth_user_id) return v.auth_user_id;
+  } catch (err) {
+    logger.warn({ err, cleanPhone }, "vendors table check failed");
+  }
+
+  // 5. Try paginated search in Supabase Auth via listUsers (up to 1000 users)
+  try {
+    for (let page = 1; page <= 10; page++) {
+      const { data: usersData, error: listErr } = await supabaseAdmin.auth.admin.listUsers({
+        page,
+        perPage: 100,
+      });
+      if (listErr || !usersData?.users || usersData.users.length === 0) break;
+
+      const match = usersData.users.find((u) => {
+        const uPhone = (u.phone || (u.user_metadata?.phone as string) || "").replace(/\D/g, "");
+        return uPhone.endsWith(cleanPhone);
+      });
+      if (match) return match.id;
+      if (usersData.users.length < 100) break;
+    }
+  } catch (err) {
+    logger.warn({ err, cleanPhone }, "listUsers failed during user resolution");
+  }
+
+  // 6. Direct schema('auth') query if supported
+  try {
+    const { data: authUser } = await (supabaseAdmin as any)
+      .schema("auth")
+      .from("users")
+      .select("id")
+      .ilike("phone", `%${cleanPhone}%`)
+      .maybeSingle();
+    if (authUser?.id) return authUser.id;
   } catch {}
 
-  // 4. Fallback UUID so auth never crashes
+  // 7. Try to create the user in Supabase Auth if not yet created
+  try {
+    const { data: created, error: createErr } = await supabaseAdmin.auth.admin.createUser({
+      phone: formattedPhone,
+      phone_confirm: true,
+      user_metadata: { phone: formattedPhone, app: appType || "dusmint" },
+    });
+    if (created?.user?.id) return created.user.id;
+    if (createErr) {
+      logger.warn({ err: createErr, cleanPhone }, "createUser with phone returned error");
+    }
+  } catch (createErr: any) {
+    logger.warn({ err: createErr, cleanPhone }, "createUser exception during resolution");
+  }
+
+  // 8. Guaranteed fallback: create in auth.users with internal email so foreign keys never fail
+  try {
+    const fallbackEmail = `user_${cleanPhone}_${Date.now()}@dusmint.internal`;
+    const { data: createdFallback } = await supabaseAdmin.auth.admin.createUser({
+      email: fallbackEmail,
+      email_confirm: true,
+      user_metadata: { phone: formattedPhone, app: appType || "dusmint" },
+    });
+    if (createdFallback?.user?.id) return createdFallback.user.id;
+  } catch (err: any) {
+    logger.error({ err, cleanPhone }, "All Supabase Auth user resolution strategies failed");
+  }
+
+  // 9. Absolute last-resort fallback
   return crypto.randomUUID();
 }
 
@@ -143,7 +213,7 @@ export async function dusmintAuthRoutes(fastify: FastifyInstance) {
 
   // 2. Verify Phone OTP
   fastify.post("/auth/otp/verify", async (request: FastifyRequest, reply: FastifyReply) => {
-    const { phone, otp } = request.body as { phone?: string; otp?: string };
+    const { phone, otp, app: appType } = request.body as { phone?: string; otp?: string; app?: string };
     if (!phone || !otp) {
       return reply.status(400).send({ success: false, message: "Phone and OTP are required" });
     }
@@ -201,26 +271,29 @@ export async function dusmintAuthRoutes(fastify: FastifyInstance) {
       });
     }
 
-    // 1. Resolve Auth User ID reliably
+    // 1. Resolve Auth User ID reliably across Riksho Rider, Driver, DusMint Partner & Customer
     if (!authUserId) {
-      authUserId = await resolveOrCreateAuthUserId(formattedPhone, cleanPhone);
+      authUserId = await resolveOrCreateAuthUserId(formattedPhone, cleanPhone, appType);
     }
 
-    // 2. Check if user profile already exists in DusMint profiles
+    const isVendorRequest = appType === "dusmint_vendor";
+    const defaultName = isVendorRequest ? "DusMint Partner" : "DusMint Customer";
+
+    // 2. Check if user profile already exists in DusMint profiles (by id or phone)
     let { data: profile } = await supabaseAdmin
       .from("profiles")
       .select("*")
-      .ilike("phone", `%${cleanPhone}%`)
+      .or(`id.eq.${authUserId},phone.ilike.%${cleanPhone}%`)
       .maybeSingle();
 
     if (!profile) {
-      const { data: newProfile } = await supabaseAdmin
+      const { data: newProfile, error: insertErr } = await supabaseAdmin
         .from("profiles")
         .upsert(
           {
             id: authUserId,
             phone: formattedPhone,
-            name: "DusMint Partner",
+            name: defaultName,
             language: "en",
             trust_tier: 1,
             veg_only: false,
@@ -230,10 +303,14 @@ export async function dusmintAuthRoutes(fastify: FastifyInstance) {
         .select()
         .single();
 
+      if (insertErr) {
+        logger.warn({ err: insertErr, authUserId, formattedPhone }, "profiles upsert warning");
+      }
+
       profile = newProfile || {
         id: authUserId,
         phone: formattedPhone,
-        name: "DusMint Partner",
+        name: defaultName,
         language: "en",
         trust_tier: 1,
         veg_only: false,
@@ -251,11 +328,12 @@ export async function dusmintAuthRoutes(fastify: FastifyInstance) {
     const isNewVendor = !vendor || !vendor.name || !vendor.lat;
 
     // Generate JWT token
+    const role = isVendorRequest || vendor ? "vendor" : "customer";
     const token = jwt.sign(
       {
         sub: profile.id,
         phone: profile.phone,
-        role: vendor ? "vendor" : "customer",
+        role,
         vendorId: vendor?.id,
       },
       JWT_SECRET,
@@ -265,7 +343,7 @@ export async function dusmintAuthRoutes(fastify: FastifyInstance) {
     const userProfileResponse = {
       id: profile.id,
       phone: profile.phone,
-      fullName: profile.name || "DusMint Partner",
+      fullName: profile.name || defaultName,
       preferredLanguage: profile.language || "en",
       trustTier: profile.trust_tier || 1,
       isVegOnly: profile.veg_only || false,
