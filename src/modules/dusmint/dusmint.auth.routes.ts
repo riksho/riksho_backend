@@ -25,7 +25,7 @@ async function resolveOrCreateAuthUserId(
   cleanPhone: string,
   appType?: string
 ): Promise<string> {
-  // 1. Check existing profiles table (DusMint customer or partner)
+  // 1. Check existing DusMint profiles table
   try {
     const { data: prof } = await supabaseAdmin
       .from("profiles")
@@ -37,31 +37,7 @@ async function resolveOrCreateAuthUserId(
     logger.warn({ err, cleanPhone }, "profiles table check failed");
   }
 
-  // 2. Check existing Riksho customer users table
-  try {
-    const { data: rikshoUser } = await supabaseAdmin
-      .from("users")
-      .select("id")
-      .ilike("phone", `%${cleanPhone}%`)
-      .maybeSingle();
-    if (rikshoUser?.id) return rikshoUser.id;
-  } catch (err) {
-    logger.warn({ err, cleanPhone }, "riksho users table check failed");
-  }
-
-  // 3. Check existing Riksho drivers table
-  try {
-    const { data: driver } = await supabaseAdmin
-      .from("drivers")
-      .select("id")
-      .ilike("phone", `%${cleanPhone}%`)
-      .maybeSingle();
-    if (driver?.id) return driver.id;
-  } catch (err) {
-    logger.warn({ err, cleanPhone }, "riksho drivers table check failed");
-  }
-
-  // 4. Check existing vendors table (DusMint vendor)
+  // 2. Check existing DusMint vendors table
   try {
     const { data: v } = await supabaseAdmin
       .from("vendors")
@@ -343,7 +319,8 @@ export async function dusmintAuthRoutes(fastify: FastifyInstance) {
     const userProfileResponse = {
       id: profile.id,
       phone: profile.phone,
-      fullName: profile.name || defaultName,
+      fullName: isVendorRequest ? (vendor?.owner_name || "") : (profile.name || defaultName),
+      email: (profile as any).email || undefined,
       preferredLanguage: profile.language || "en",
       trustTier: profile.trust_tier || 1,
       isVegOnly: profile.veg_only || false,
@@ -379,6 +356,7 @@ export async function dusmintAuthRoutes(fastify: FastifyInstance) {
       id: profile.id,
       phone: profile.phone,
       fullName: profile.name,
+      email: (profile as any).email || undefined,
       preferredLanguage: profile.language,
       trustTier: profile.trust_tier,
       isVegOnly: profile.veg_only,
@@ -394,6 +372,7 @@ export async function dusmintAuthRoutes(fastify: FastifyInstance) {
 
     const body = request.body as {
       fullName?: string;
+      email?: string;
       preferredLanguage?: string;
       isVegOnly?: boolean;
       avatarUrl?: string;
@@ -404,22 +383,39 @@ export async function dusmintAuthRoutes(fastify: FastifyInstance) {
     if (body.preferredLanguage !== undefined) updates.language = body.preferredLanguage;
     if (body.isVegOnly !== undefined) updates.veg_only = body.isVegOnly;
     if (body.avatarUrl !== undefined) updates.avatar_url = body.avatarUrl;
+    if (body.email !== undefined) updates.email = body.email;
 
-    const { data: updated, error } = await supabaseAdmin
+    let updated: any = null;
+    let { data, error } = await supabaseAdmin
       .from("profiles")
       .update(updates)
       .eq("id", userId)
       .select()
       .single();
 
-    if (error || !updated) {
+    if (error && error.message && error.message.includes("'email'")) {
+      // If email column does not exist yet on profiles, retry update without email so it never crashes
+      delete updates.email;
+      const res = await supabaseAdmin
+        .from("profiles")
+        .update(updates)
+        .eq("id", userId)
+        .select()
+        .single();
+      data = res.data;
+      error = res.error;
+    }
+
+    if (error || !data) {
       return reply.status(500).send({ message: "Failed to update profile", error: error?.message });
     }
+    updated = data;
 
     return {
       id: updated.id,
       phone: updated.phone,
       fullName: updated.name,
+      email: updated.email || body.email || undefined,
       preferredLanguage: updated.language,
       trustTier: updated.trust_tier,
       isVegOnly: updated.veg_only,
