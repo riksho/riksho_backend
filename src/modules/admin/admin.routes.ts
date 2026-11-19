@@ -116,7 +116,30 @@ export async function adminRoutes(app: FastifyInstance) {
       logger.error({ err: error }, "Failed to fetch DusMint partners");
       return [];
     }
-    return data || [];
+
+    const enriched = await Promise.all(
+      (data || []).map(async (v: any) => {
+        let address = v.clusters ? `${v.clusters.name}, ${v.clusters.city}` : "Patna";
+        if (v.auth_user_id) {
+          const { data: addr } = await supabaseAdmin
+            .from("addresses")
+            .select("landmark, house")
+            .eq("user_id", v.auth_user_id)
+            .order("created_at", { ascending: false })
+            .limit(1)
+            .maybeSingle();
+          if (addr?.landmark) {
+            address = addr.house ? `${addr.house}, ${addr.landmark}` : addr.landmark;
+          }
+        }
+        return {
+          ...v,
+          address,
+        };
+      })
+    );
+
+    return enriched;
   });
 
   /**

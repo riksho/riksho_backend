@@ -37,12 +37,11 @@ export async function dusmintVendorRoutes(fastify: FastifyInstance) {
         .insert({
           name: "Central Mandi Cluster",
           city: "Patna",
-          state: "Bihar",
-          pincode: "800001",
-          center_lat: body.lat || 25.5941,
-          center_lng: body.lng || 85.1376,
-          radius_km: 15,
-          is_active: true,
+          centre_lat: body.lat || 25.5941,
+          centre_lng: body.lng || 85.1376,
+          centre: `SRID=4326;POINT(${body.lng || 85.1376} ${body.lat || 25.5941})`,
+          radius_m: 15000,
+          status: "active",
         })
         .select("id")
         .single();
@@ -67,7 +66,7 @@ export async function dusmintVendorRoutes(fastify: FastifyInstance) {
       owner_phone: formattedPhone,
       category,
       cluster_id: cluster?.id,
-      address: body.address,
+      location: `SRID=4326;POINT(${body.lng || 85.1376} ${body.lat || 25.5941})`,
       lat: body.lat || 25.5941,
       lng: body.lng || 85.1376,
       bank_or_upi: body.bankOrUpi,
@@ -105,6 +104,25 @@ export async function dusmintVendorRoutes(fastify: FastifyInstance) {
         return reply.status(500).send({ success: false, message: error.message });
       }
       savedVendor = data;
+    }
+
+    // Persist vendor address in addresses table for geographic search & admin display
+    if (body.address) {
+      try {
+        await supabaseAdmin.from("addresses").insert({
+          user_id: body.authUserId || null,
+          cluster_id: cluster?.id || null,
+          label: "Shop",
+          house: body.shopName,
+          landmark: body.address,
+          location: `SRID=4326;POINT(${body.lng || 85.1376} ${body.lat || 25.5941})`,
+          lat: body.lat || 25.5941,
+          lng: body.lng || 85.1376,
+          is_default: true,
+        });
+      } catch (addrErr) {
+        logger.warn({ err: addrErr }, "Could not record vendor address into addresses table");
+      }
     }
 
     return {
