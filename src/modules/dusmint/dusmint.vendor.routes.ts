@@ -137,17 +137,64 @@ export async function dusmintVendorRoutes(fastify: FastifyInstance) {
     const { data: vendors } = await supabaseAdmin
       .from("vendors")
       .select(`
-        id, name, owner_name, owner_phone, category, cluster_id, is_open, score, commission_pct,
+        id, auth_user_id, name, owner_name, owner_phone, category, cluster_id, is_open, score, commission_pct,
         bank_or_upi, lat, lng, shop_photo_urls, status,
         clusters(name, city)
       `)
-      .order("name", { ascending: true });
+      .order("created_at", { ascending: false });
 
     return (vendors || []).map((v: any) => ({
       ...v,
-      cluster_name: v.clusters?.name || "Indore Mandi Cluster",
-      cluster_city: v.clusters?.city || "Indore",
+      cluster_name: v.clusters?.name || "",
+      cluster_city: v.clusters?.city || "",
     }));
+  });
+
+  // 0.05 Get Current Active Vendor (matched by phone)
+  fastify.get("/vendor/me", async (request: FastifyRequest) => {
+    const { phone } = request.query as { phone?: string };
+    const cleanPhone = phone ? phone.replace(/\D/g, "").slice(-10) : "";
+
+    let vendor: any = null;
+
+    if (cleanPhone) {
+      const { data } = await supabaseAdmin
+        .from("vendors")
+        .select(`
+          id, auth_user_id, name, owner_name, owner_phone, category, cluster_id, is_open, score, commission_pct,
+          bank_or_upi, lat, lng, shop_photo_urls, status,
+          clusters(name, city)
+        `)
+        .ilike("owner_phone", `%${cleanPhone}%`)
+        .order("created_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      if (data) vendor = data;
+    }
+
+    if (!vendor) {
+      const { data } = await supabaseAdmin
+        .from("vendors")
+        .select(`
+          id, auth_user_id, name, owner_name, owner_phone, category, cluster_id, is_open, score, commission_pct,
+          bank_or_upi, lat, lng, shop_photo_urls, status,
+          clusters(name, city)
+        `)
+        .order("created_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      if (data) vendor = data;
+    }
+
+    if (!vendor) return null;
+
+    return {
+      ...vendor,
+      cluster_name: vendor.clusters?.name || "",
+      cluster_city: vendor.clusters?.city || "",
+    };
   });
 
   // 0.1 Toggle Vendor Live Store Online/Offline Status
