@@ -135,6 +135,14 @@ export async function adminRoutes(app: FastifyInstance) {
         return {
           ...v,
           address,
+          ownerName: v.owner_name || v.ownerName || "",
+          ownerPhone: v.owner_phone || v.ownerPhone || "",
+          clusterName: v.clusters?.name || "Central Mandi",
+          city: v.clusters?.city || "Patna",
+          payoutVpa: v.bank_or_upi || null,
+          shopPhotos: v.shop_photo_urls || [],
+          isOpen: v.is_open ?? false,
+          createdAt: v.created_at || "",
         };
       })
     );
