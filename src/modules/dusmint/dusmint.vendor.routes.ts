@@ -136,10 +136,74 @@ export async function dusmintVendorRoutes(fastify: FastifyInstance) {
   fastify.get("/vendor/list", async () => {
     const { data: vendors } = await supabaseAdmin
       .from("vendors")
-      .select("id, name, owner_name, owner_phone, category, cluster_id, is_open, score, commission_pct")
+      .select(`
+        id, name, owner_name, owner_phone, category, cluster_id, is_open, score, commission_pct,
+        bank_or_upi, lat, lng, shop_photo_urls, status,
+        clusters(name, city)
+      `)
       .order("name", { ascending: true });
 
-    return vendors || [];
+    return (vendors || []).map((v: any) => ({
+      ...v,
+      cluster_name: v.clusters?.name || "Indore Mandi Cluster",
+      cluster_city: v.clusters?.city || "Indore",
+    }));
+  });
+
+  // 0.1 Toggle Vendor Live Store Online/Offline Status
+  fastify.patch("/vendor/status", async (request: FastifyRequest, reply: FastifyReply) => {
+    const { vendorId, isOpen } = request.body as { vendorId: string; isOpen: boolean };
+
+    if (!vendorId) {
+      return reply.status(400).send({ success: false, message: "vendorId is required" });
+    }
+
+    const { data, error } = await supabaseAdmin
+      .from("vendors")
+      .update({ is_open: isOpen })
+      .eq("id", vendorId)
+      .select()
+      .single();
+
+    if (error) {
+      return reply.status(500).send({ success: false, message: error.message });
+    }
+
+    return { success: true, vendor: data };
+  });
+
+  // 0.2 Update Vendor Profile Details
+  fastify.patch("/vendor/profile", async (request: FastifyRequest, reply: FastifyReply) => {
+    const { vendorId, shopName, ownerName, bankOrUpi, category } = request.body as {
+      vendorId: string;
+      shopName?: string;
+      ownerName?: string;
+      bankOrUpi?: string;
+      category?: string;
+    };
+
+    if (!vendorId) {
+      return reply.status(400).send({ success: false, message: "vendorId is required" });
+    }
+
+    const updates: Record<string, any> = {};
+    if (shopName) updates.name = shopName;
+    if (ownerName) updates.owner_name = ownerName;
+    if (bankOrUpi) updates.bank_or_upi = bankOrUpi;
+    if (category) updates.category = category;
+
+    const { data, error } = await supabaseAdmin
+      .from("vendors")
+      .update(updates)
+      .eq("id", vendorId)
+      .select()
+      .single();
+
+    if (error) {
+      return reply.status(500).send({ success: false, message: error.message });
+    }
+
+    return { success: true, vendor: data };
   });
 
   // 1. Get Vendor Orders for Active Slot
@@ -314,20 +378,43 @@ export async function dusmintVendorRoutes(fastify: FastifyInstance) {
     const readyOrDelivered = (parts || []).filter((p) => ["ready", "picked_up", "delivered"].includes(p.status));
 
     const totalSales = readyOrDelivered.reduce((sum, p) => sum + Number(p.subtotal), 0);
-    const todaySalesPaise = totalSales > 0 ? Math.round(totalSales * 100) : 425000;
+    const todaySalesPaise = Math.round(totalSales * 100);
     const commissionDeductedPaise = Math.round(todaySalesPaise * 0.1);
     const netPayoutPendingPaise = todaySalesPaise - commissionDeductedPaise;
+
+    let payoutVpa = "";
+    if (vendorId) {
+      const { data: v } = await supabaseAdmin
+        .from("vendors")
+        .select("bank_or_upi")
+        .eq("id", vendorId)
+        .maybeSingle();
+      if (v?.bank_or_upi) payoutVpa = v.bank_or_upi;
+    }
+
+    let recentSettlements: any[] = [];
+    if (vendorId) {
+      const { data: payouts } = await supabaseAdmin
+        .from("vendor_payouts")
+        .select("id, amount, status, created_at, reference_id")
+        .eq("vendor_id", vendorId)
+        .order("created_at", { ascending: false })
+        .limit(5);
+
+      recentSettlements = (payouts || []).map((p: any) => ({
+        date: new Date(p.created_at).toLocaleDateString("en-IN", { day: "numeric", month: "short" }),
+        amountPaise: Math.round(Number(p.amount) * 100),
+        status: `${p.status || "Credited"}${p.reference_id ? ` (Ref: ${p.reference_id})` : ""}`.trim(),
+      }));
+    }
 
     return {
       todaySalesPaise,
       commissionDeductedPaise,
       netPayoutPendingPaise,
-      payoutVpa: "ramesh.sharma@okaxis",
+      payoutVpa: payoutVpa || "Not configured",
       settlementSchedule: "Daily 09:30 PM Batch",
-      recentSettlements: [
-        { date: "Yesterday", amountPaise: 512000, status: "Credited (Ref: UPI-98412)" },
-        { date: "28 Oct", amountPaise: 489000, status: "Credited (Ref: UPI-98103)" },
-      ],
+      recentSettlements,
     };
   });
 }
