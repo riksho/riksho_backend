@@ -66,6 +66,7 @@ export async function dusmintVendorRoutes(fastify: FastifyInstance) {
       owner_phone: formattedPhone,
       category,
       cluster_id: cluster?.id,
+      address: body.address,
       location: `SRID=4326;POINT(${body.lng || 85.1376} ${body.lat || 25.5941})`,
       lat: body.lat || 25.5941,
       lng: body.lng || 85.1376,
@@ -138,7 +139,7 @@ export async function dusmintVendorRoutes(fastify: FastifyInstance) {
       .from("vendors")
       .select(`
         id, auth_user_id, name, owner_name, owner_phone, category, cluster_id, is_open, score, commission_pct,
-        bank_or_upi, lat, lng, shop_photo_urls, status,
+        bank_or_upi, address, lat, lng, shop_photo_urls, status,
         clusters(name, city)
       `)
       .order("created_at", { ascending: false });
@@ -162,7 +163,7 @@ export async function dusmintVendorRoutes(fastify: FastifyInstance) {
         .from("vendors")
         .select(`
           id, auth_user_id, name, owner_name, owner_phone, category, cluster_id, is_open, score, commission_pct,
-          bank_or_upi, lat, lng, shop_photo_urls, status,
+          bank_or_upi, address, lat, lng, shop_photo_urls, status,
           clusters(name, city)
         `)
         .ilike("owner_phone", `%${cleanPhone}%`)
@@ -178,7 +179,7 @@ export async function dusmintVendorRoutes(fastify: FastifyInstance) {
         .from("vendors")
         .select(`
           id, auth_user_id, name, owner_name, owner_phone, category, cluster_id, is_open, score, commission_pct,
-          bank_or_upi, lat, lng, shop_photo_urls, status,
+          bank_or_upi, address, lat, lng, shop_photo_urls, status,
           clusters(name, city)
         `)
         .order("created_at", { ascending: false })
@@ -221,12 +222,13 @@ export async function dusmintVendorRoutes(fastify: FastifyInstance) {
 
   // 0.2 Update Vendor Profile Details
   fastify.patch("/vendor/profile", async (request: FastifyRequest, reply: FastifyReply) => {
-    const { vendorId, shopName, ownerName, bankOrUpi, category } = request.body as {
+    const { vendorId, shopName, ownerName, bankOrUpi, category, address } = request.body as {
       vendorId: string;
       shopName?: string;
       ownerName?: string;
       bankOrUpi?: string;
       category?: string;
+      address?: string;
     };
 
     if (!vendorId) {
@@ -238,6 +240,7 @@ export async function dusmintVendorRoutes(fastify: FastifyInstance) {
     if (ownerName) updates.owner_name = ownerName;
     if (bankOrUpi) updates.bank_or_upi = bankOrUpi;
     if (category) updates.category = category;
+    if (address) updates.address = address;
 
     const { data, error } = await supabaseAdmin
       .from("vendors")
