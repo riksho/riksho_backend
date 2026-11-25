@@ -6,7 +6,7 @@ import { logger } from "../../common/logger.js";
 import { env } from "../../config/env.js";
 import crypto from "crypto";
 
-const JWT_SECRET = process.env.JWT_SECRET;
+const JWT_SECRET: string = process.env.JWT_SECRET || "";
 if (!JWT_SECRET && process.env.NODE_ENV === "production") {
   throw new Error("FATAL: JWT_SECRET environment variable must be set in production");
 }

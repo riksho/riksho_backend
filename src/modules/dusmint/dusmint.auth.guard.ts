@@ -2,7 +2,7 @@ import type { FastifyRequest, FastifyReply } from "fastify";
 import jwt from "jsonwebtoken";
 import { supabaseAnon, supabaseAdmin } from "../../config/supabase.js";
 
-const JWT_SECRET = process.env.JWT_SECRET;
+const JWT_SECRET: string = process.env.JWT_SECRET || "";
 if (!JWT_SECRET && process.env.NODE_ENV === "production") {
   throw new Error("FATAL: JWT_SECRET environment variable must be set in production");
 }
