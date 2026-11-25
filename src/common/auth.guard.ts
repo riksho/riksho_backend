@@ -37,7 +37,8 @@ export async function authGuard(request: FastifyRequest, reply: FastifyReply) {
     if (error || !data.user) {
       // Fallback: Check if token is a valid DusMint internal JWT
       try {
-        const JWT_SECRET = process.env.JWT_SECRET || "dusmint-secret-key-32-chars-minimum-prod-2026";
+        const JWT_SECRET = process.env.JWT_SECRET;
+        if (!JWT_SECRET) throw new Error("JWT_SECRET not configured");
         const decoded = jwt.verify(token, JWT_SECRET) as any;
         if (decoded && (decoded.sub || decoded.id)) {
           request.user = {

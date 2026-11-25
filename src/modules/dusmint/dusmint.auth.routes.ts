@@ -6,7 +6,10 @@ import { logger } from "../../common/logger.js";
 import { env } from "../../config/env.js";
 import crypto from "crypto";
 
-const JWT_SECRET = process.env.JWT_SECRET || "dusmint-secret-key-32-chars-minimum-prod-2026";
+const JWT_SECRET = process.env.JWT_SECRET;
+if (!JWT_SECRET && process.env.NODE_ENV === "production") {
+  throw new Error("FATAL: JWT_SECRET environment variable must be set in production");
+}
 
 /**
  * Generate a cryptographically random 6-digit OTP.
@@ -180,8 +183,9 @@ export async function dusmintAuthRoutes(fastify: FastifyInstance) {
       success: true,
       message: smsSent
         ? "OTP sent successfully to your mobile via SMS"
-        : "OTP dispatched (Use 123456 for dev/fallback)",
-      devOtp: "123456",
+        : "OTP dispatched. Please check your SMS.",
+      // Only expose dev OTP in non-production for local testing
+      ...(env.NODE_ENV !== "production" && { devOtp: "123456" }),
       smsSent,
       note: smsSent ? "Delivered with 10MINT header" : undefined,
     };
@@ -200,8 +204,8 @@ export async function dusmintAuthRoutes(fastify: FastifyInstance) {
     let isOtpValid = false;
     let authUserId: string | null = null;
 
-    // A. Check dev OTP 1234 / 123456
-    if (otp === "1234" || otp === "123456") {
+    // A. Dev OTP bypass — ONLY allowed in non-production environments
+    if ((otp === "1234" || otp === "123456") && env.NODE_ENV !== "production") {
       isOtpValid = true;
     } else {
       // B. Check our self-managed OTP in dusmint_pending_otps

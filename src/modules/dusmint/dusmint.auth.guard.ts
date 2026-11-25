@@ -2,7 +2,10 @@ import type { FastifyRequest, FastifyReply } from "fastify";
 import jwt from "jsonwebtoken";
 import { supabaseAnon, supabaseAdmin } from "../../config/supabase.js";
 
-const JWT_SECRET = process.env.JWT_SECRET || "dusmint-secret-key-32-chars-minimum-prod-2026";
+const JWT_SECRET = process.env.JWT_SECRET;
+if (!JWT_SECRET && process.env.NODE_ENV === "production") {
+  throw new Error("FATAL: JWT_SECRET environment variable must be set in production");
+}
 
 export interface DusmintAuthUser {
   id: string;
@@ -71,8 +74,8 @@ export async function dusmintAuthGuard(request: FastifyRequest, reply: FastifyRe
     // Continue to dev fallback if applicable
   }
 
-  // 3. Fallback for local development if token is mock
-  if (token.startsWith("dev-") || token === "test-token") {
+  // 3. Fallback for local development ONLY — blocked in production
+  if ((token.startsWith("dev-") || token === "test-token") && process.env.NODE_ENV !== "production") {
     const defaultUserId = "76a64e55-e036-4d6b-9875-a8a7214ba6d3";
     const userObj: DusmintAuthUser = {
       id: defaultUserId,
