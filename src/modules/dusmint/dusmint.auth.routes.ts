@@ -11,6 +11,11 @@ if (!JWT_SECRET && process.env.NODE_ENV === "production") {
   throw new Error("FATAL: JWT_SECRET environment variable must be set in production");
 }
 
+// Supabase Auth Test Phone Numbers (mirrors Supabase Dashboard -> Auth -> Phone -> Test Phone Numbers)
+const SUPABASE_TEST_PHONES: Record<string, string> = {
+  "9876543210": "123456",
+};
+
 /**
  * Generate a cryptographically random 6-digit OTP.
  */
@@ -127,6 +132,16 @@ export async function dusmintAuthRoutes(fastify: FastifyInstance) {
 
     const cleanPhone = phone.replace(/\D/g, "").slice(-10);
     const formattedPhone = `+91${cleanPhone}`;
+
+    // If this is the configured Supabase test phone number, skip live SMS dispatch
+    if (SUPABASE_TEST_PHONES[cleanPhone]) {
+      return {
+        success: true,
+        message: "Test OTP ready",
+        smsSent: true,
+      };
+    }
+
     const otpCode = generateOtp();
     const expiresAt = new Date(Date.now() + 5 * 60 * 1000).toISOString(); // 5 min TTL
 
@@ -204,8 +219,11 @@ export async function dusmintAuthRoutes(fastify: FastifyInstance) {
     let isOtpValid = false;
     let authUserId: string | null = null;
 
-    // A. Dev OTP bypass — ONLY allowed in non-production environments
-    if ((otp === "1234" || otp === "123456") && env.NODE_ENV !== "production") {
+    // A. Allow Supabase configured test phone+OTP (e.g. 9876543210 -> 123456), or dev bypass in non-prod
+    if (
+      (SUPABASE_TEST_PHONES[cleanPhone] && otp === SUPABASE_TEST_PHONES[cleanPhone]) ||
+      ((otp === "1234" || otp === "123456") && env.NODE_ENV !== "production")
+    ) {
       isOtpValid = true;
     } else {
       // B. Check our self-managed OTP in dusmint_pending_otps

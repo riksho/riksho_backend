@@ -174,21 +174,6 @@ export async function dusmintVendorRoutes(fastify: FastifyInstance) {
       if (data) vendor = data;
     }
 
-    if (!vendor) {
-      const { data } = await supabaseAdmin
-        .from("vendors")
-        .select(`
-          id, auth_user_id, name, owner_name, owner_phone, category, cluster_id, is_open, score, commission_pct,
-          bank_or_upi, address, lat, lng, shop_photo_urls, status,
-          clusters(name, city)
-        `)
-        .order("created_at", { ascending: false })
-        .limit(1)
-        .maybeSingle();
-
-      if (data) vendor = data;
-    }
-
     if (!vendor) return null;
 
     return {
@@ -260,19 +245,20 @@ export async function dusmintVendorRoutes(fastify: FastifyInstance) {
   fastify.get("/vendor/orders", async (request: FastifyRequest) => {
     const { vendorId } = request.query as { vendorId?: string };
 
-    let query = supabaseAdmin
+    if (!vendorId) {
+      return [];
+    }
+
+    const query = supabaseAdmin
       .from("order_vendor_parts")
       .select(`
         id, order_id, status, subtotal, packed_weight_g, seal_qr, created_at,
         orders(id, order_number, status, slots(start_time, end_time)),
         order_items(id, item_name, unit, qty, price, line_total)
       `)
+      .eq("vendor_id", vendorId)
       .order("created_at", { ascending: false })
       .limit(30);
-
-    if (vendorId) {
-      query = query.eq("vendor_id", vendorId);
-    }
 
     const { data: parts, error } = await query;
     if (error) {
@@ -366,41 +352,140 @@ export async function dusmintVendorRoutes(fastify: FastifyInstance) {
   fastify.get("/vendor/stock", async (request: FastifyRequest) => {
     const { vendorId } = request.query as { vendorId?: string };
 
-    let query = supabaseAdmin.from("items").select("*, categories(name_en, name_hi)");
-    if (vendorId) {
-      query = query.eq("vendor_id", vendorId);
+    if (!vendorId) {
+      return [];
     }
+
+    const query = supabaseAdmin
+      .from("items")
+      .select("*, categories(name_en, name_hi)")
+      .eq("vendor_id", vendorId);
 
     const { data: items } = await query;
 
-    return (items || []).map((i) => ({
+    return (items || []).map((i: any) => ({
       id: i.id,
       nameEn: i.name_en,
       nameHi: i.name_hi,
-      category: (i.categories as any)?.name_en || "General",
+      category: i.categories?.name_en || "General",
       unit: i.unit,
       pricePaise: Math.round(Number(i.price) * 100),
       mrpPaise: i.mrp ? Math.round(Number(i.mrp) * 100) : undefined,
       isInStock: i.in_stock,
       photoUrl: i.photo_url || undefined,
+      stockKg: i.stock_kg ?? (i.in_stock ? 10 : 0),
+      stockGrams: i.stock_grams ?? 0,
     }));
+  });
+
+  // 3.5 Add New Item to Vendor Stock
+  fastify.post("/vendor/stock", async (request: FastifyRequest, reply: FastifyReply) => {
+    const body = request.body as {
+      vendorId: string;
+      nameEn: string;
+      nameHi?: string;
+      category?: string;
+      unit: string;
+      pricePaise: number;
+      mrpPaise?: number;
+      photoUrl?: string;
+      isInStock?: boolean;
+      stockKg?: number;
+      stockGrams?: number;
+    };
+
+    if (!body.vendorId || !body.nameEn) {
+      return reply.status(400).send({ success: false, message: "vendorId and nameEn are required" });
+    }
+
+    // Resolve category_id if matching category exists
+    let categoryId: string | null = null;
+    if (body.category) {
+      const { data: cat } = await supabaseAdmin
+        .from("categories")
+        .select("id")
+        .ilike("name_en", `%${body.category}%`)
+        .limit(1)
+        .maybeSingle();
+      if (cat?.id) categoryId = cat.id;
+    }
+
+    const insertPayload: any = {
+      vendor_id: body.vendorId,
+      category_id: categoryId,
+      name_en: body.nameEn,
+      name_hi: body.nameHi || body.nameEn,
+      unit: body.unit || "1 kg",
+      price: Number(((body.pricePaise || 0) / 100).toFixed(2)),
+      mrp: body.mrpPaise ? Number((body.mrpPaise / 100).toFixed(2)) : null,
+      in_stock: body.isInStock ?? true,
+      photo_url: body.photoUrl || null,
+    };
+
+    const { data: inserted, error } = await supabaseAdmin
+      .from("items")
+      .insert(insertPayload)
+      .select("*, categories(name_en, name_hi)")
+      .single();
+
+    if (error || !inserted) {
+      return reply.status(500).send({ success: false, message: error?.message || "Failed to add stock item" });
+    }
+
+    return {
+      success: true,
+      item: {
+        id: inserted.id,
+        nameEn: inserted.name_en,
+        nameHi: inserted.name_hi,
+        category: (inserted.categories as any)?.name_en || body.category || "General",
+        unit: inserted.unit,
+        pricePaise: Math.round(Number(inserted.price) * 100),
+        mrpPaise: inserted.mrp ? Math.round(Number(inserted.mrp) * 100) : undefined,
+        isInStock: inserted.in_stock,
+        photoUrl: inserted.photo_url || undefined,
+        stockKg: body.stockKg ?? 10,
+        stockGrams: body.stockGrams ?? 0,
+      },
+    };
   });
 
   // 4. Update Stock or Price
   fastify.put("/vendor/stock/:itemId", async (request: FastifyRequest, reply: FastifyReply) => {
     const { itemId } = request.params as { itemId: string };
-    const { inStock, price } = request.body as { inStock?: boolean; price?: number };
+    const { inStock, price, stockKg, stockGrams } = request.body as {
+      inStock?: boolean;
+      price?: number;
+      stockKg?: number;
+      stockGrams?: number;
+    };
 
     const updatePayload: any = {};
     if (typeof inStock === "boolean") updatePayload.in_stock = inStock;
     if (typeof price === "number") updatePayload.price = price;
+    if (typeof stockKg === "number") updatePayload.stock_kg = stockKg;
+    if (typeof stockGrams === "number") updatePayload.stock_grams = stockGrams;
 
-    const { data: updated, error } = await supabaseAdmin
+    let { data: updated, error } = await supabaseAdmin
       .from("items")
       .update(updatePayload)
       .eq("id", itemId)
       .select()
       .single();
+
+    // Fallback if stock_kg/stock_grams columns aren't in items table yet
+    if (error && (updatePayload.stock_kg !== undefined || updatePayload.stock_grams !== undefined)) {
+      delete updatePayload.stock_kg;
+      delete updatePayload.stock_grams;
+      const retry = await supabaseAdmin
+        .from("items")
+        .update(updatePayload)
+        .eq("id", itemId)
+        .select()
+        .single();
+      updated = retry.data;
+      error = retry.error;
+    }
 
     if (error) {
       return reply.status(500).send({ message: "Failed to update item", error: error.message });
@@ -416,13 +501,21 @@ export async function dusmintVendorRoutes(fastify: FastifyInstance) {
   fastify.get("/vendor/earnings", async (request: FastifyRequest) => {
     const { vendorId } = request.query as { vendorId?: string };
 
-    let query = supabaseAdmin
-      .from("order_vendor_parts")
-      .select("subtotal, status, created_at");
-
-    if (vendorId) {
-      query = query.eq("vendor_id", vendorId);
+    if (!vendorId) {
+      return {
+        todaySalesPaise: 0,
+        commissionDeductedPaise: 0,
+        netPayoutPendingPaise: 0,
+        payoutVpa: "Not configured",
+        settlementSchedule: "Daily 09:30 PM Batch",
+        recentSettlements: [],
+      };
     }
+
+    const query = supabaseAdmin
+      .from("order_vendor_parts")
+      .select("subtotal, status, created_at")
+      .eq("vendor_id", vendorId);
 
     const { data: parts } = await query;
     const readyOrDelivered = (parts || []).filter((p) => ["ready", "picked_up", "delivered"].includes(p.status));
