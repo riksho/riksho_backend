@@ -2,6 +2,55 @@ import type { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
 import { supabaseAdmin } from "../../config/supabase.js";
 import { logger } from "../../common/logger.js";
 
+const VENDOR_PHOTO_BUCKET = "vendor-photos";
+
+async function uploadVendorPhotoIfBase64(keyPrefix: string, photoUri: string): Promise<string> {
+  if (!photoUri || !photoUri.startsWith("data:image/")) {
+    return photoUri;
+  }
+
+  try {
+    const match = photoUri.match(/^data:(image\/[a-zA-Z0-9+.-]+);base64,(.+)$/);
+    if (!match) return photoUri;
+
+    const mimeType = match[1];
+    const base64Data = match[2];
+    const ext = mimeType.includes("png") ? "png" : "jpg";
+    const buffer = Buffer.from(base64Data, "base64");
+    const safePrefix = keyPrefix.replace(/[^a-zA-Z0-9_-]/g, "");
+    const filePath = `${safePrefix}/${Date.now()}.${ext}`;
+
+    // Ensure bucket exists (ignore error if already created)
+    await supabaseAdmin.storage.createBucket(VENDOR_PHOTO_BUCKET, { public: true }).catch(() => {});
+
+    const { error: uploadError } = await supabaseAdmin.storage
+      .from(VENDOR_PHOTO_BUCKET)
+      .upload(filePath, buffer, {
+        contentType: mimeType,
+        upsert: true,
+      });
+
+    if (uploadError) {
+      logger.warn({ err: uploadError }, "Failed to upload vendor photo to storage, keeping inline URI");
+      return photoUri;
+    }
+
+    const { data: publicUrlData } = supabaseAdmin.storage
+      .from(VENDOR_PHOTO_BUCKET)
+      .getPublicUrl(filePath);
+
+    return publicUrlData?.publicUrl || photoUri;
+  } catch (err) {
+    logger.warn({ err }, "Unexpected error uploading vendor photo");
+    return photoUri;
+  }
+}
+
+async function resolveShopPhotoUrls(keyPrefix: string, urls?: string[]): Promise<string[] | undefined> {
+  if (!urls || urls.length === 0) return undefined;
+  return Promise.all(urls.map((u) => uploadVendorPhotoIfBase64(keyPrefix, u)));
+}
+
 export async function dusmintVendorRoutes(fastify: FastifyInstance) {
   // 0.5 Vendor Onboarding (4 Checklist Items: Owner, Shop & Address, Photo, UPI)
   fastify.post("/vendor/onboarding", async (request: FastifyRequest, reply: FastifyReply) => {
@@ -60,6 +109,8 @@ export async function dusmintVendorRoutes(fastify: FastifyInstance) {
       .or(`owner_phone.ilike.%${cleanPhone}%${body.authUserId ? `,auth_user_id.eq.${body.authUserId}` : ""}`)
       .maybeSingle();
 
+    const resolvedPhotos = await resolveShopPhotoUrls(cleanPhone, body.shopPhotoUrls);
+
     const vendorPayload: any = {
       name: body.shopName,
       owner_name: body.ownerName,
@@ -74,7 +125,7 @@ export async function dusmintVendorRoutes(fastify: FastifyInstance) {
       payout_mode: "upi",
       status: "verified",
       is_open: true,
-      shop_photo_urls: body.shopPhotoUrls || [],
+      shop_photo_urls: resolvedPhotos || [],
     };
 
     if (body.authUserId) {
@@ -207,13 +258,14 @@ export async function dusmintVendorRoutes(fastify: FastifyInstance) {
 
   // 0.2 Update Vendor Profile Details
   fastify.patch("/vendor/profile", async (request: FastifyRequest, reply: FastifyReply) => {
-    const { vendorId, shopName, ownerName, bankOrUpi, category, address } = request.body as {
+    const { vendorId, shopName, ownerName, bankOrUpi, category, address, shopPhotoUrls } = request.body as {
       vendorId: string;
       shopName?: string;
       ownerName?: string;
       bankOrUpi?: string;
       category?: string;
       address?: string;
+      shopPhotoUrls?: string[];
     };
 
     if (!vendorId) {
@@ -226,6 +278,12 @@ export async function dusmintVendorRoutes(fastify: FastifyInstance) {
     if (bankOrUpi) updates.bank_or_upi = bankOrUpi;
     if (category) updates.category = category;
     if (address) updates.address = address;
+    if (shopPhotoUrls && shopPhotoUrls.length > 0) {
+      const resolvedPhotos = await resolveShopPhotoUrls(vendorId, shopPhotoUrls);
+      if (resolvedPhotos && resolvedPhotos.length > 0) {
+        updates.shop_photo_urls = resolvedPhotos;
+      }
+    }
 
     const { data, error } = await supabaseAdmin
       .from("vendors")
