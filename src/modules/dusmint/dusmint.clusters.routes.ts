@@ -128,7 +128,43 @@ export async function dusmintClustersRoutes(fastify: FastifyInstance) {
     }));
   });
 
-  // 4. Vendors in Cluster
+  const mapVendorToShop = (v: any) => ({
+    id: v.id,
+    clusterId: v.cluster_id,
+    shopName: v.name,
+    ownerName: v.owner_name,
+    ownerPhone: v.owner_phone || undefined,
+    category: v.category || "groceries",
+    addressText: v.address || v.area || "Nearby",
+    areaName:
+      v.area ||
+      (v.address ? String(v.address).split(",")[0].trim() : "Nearby"),
+    fssaiLicenseNo: v.fssai_no || undefined,
+    score: 4.8,
+    isOpen: v.is_open !== undefined ? Boolean(v.is_open) : true,
+    bannerPhotoUrl:
+      (Array.isArray(v.shop_photo_urls) && v.shop_photo_urls.length > 0
+        ? v.shop_photo_urls[0]
+        : null) ||
+      v.banner_url ||
+      "https://images.unsplash.com/photo-1542838132-92c53300491e?w=800",
+    totalDeliveredOrders: 142,
+    deliveryTimeMins: 12,
+    distanceKm: 0.4,
+  });
+
+  // 4. All Verified Vendors (Customer App Home Feed)
+  fastify.get("/vendors", async () => {
+    const { data: vendors } = await supabaseAdmin
+      .from("vendors")
+      .select("*")
+      .eq("status", "verified")
+      .order("created_at", { ascending: false });
+
+    return (vendors || []).map(mapVendorToShop);
+  });
+
+  // 4b. Vendors in Cluster
   fastify.get("/clusters/:clusterId/vendors", async (request: FastifyRequest) => {
     const { clusterId } = request.params as { clusterId: string };
 
@@ -138,19 +174,7 @@ export async function dusmintClustersRoutes(fastify: FastifyInstance) {
       .eq("cluster_id", clusterId)
       .eq("status", "verified");
 
-    return (vendors || []).map((v) => ({
-      id: v.id,
-      clusterId: v.cluster_id,
-      shopName: v.name,
-      ownerName: v.owner_name,
-      category: v.category,
-      addressText: v.area || "Indore Vijay Nagar",
-      fssaiLicenseNo: v.fssai_no || undefined,
-      score: 4.8,
-      isOpen: true,
-      bannerPhotoUrl: v.banner_url || "https://images.unsplash.com/photo-1542838132-92c53300491e?w=500",
-      totalDeliveredOrders: 142,
-    }));
+    return (vendors || []).map(mapVendorToShop);
   });
 
   // 5. Search items in cluster
