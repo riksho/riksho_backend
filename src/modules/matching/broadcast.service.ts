@@ -78,6 +78,44 @@ export async function broadcastOrderStatus(
 }
 
 /**
+ * Broadcast a vendor inventory item change (`added` | `updated` | `deleted`)
+ * to `vendor-inventory:{vendorId}` via stateless Supabase Realtime REST broadcast.
+ */
+export async function broadcastVendorInventory(
+  vendorId: string,
+  action: "added" | "updated" | "deleted",
+  item: Record<string, unknown>
+): Promise<void> {
+  if (!vendorId) return;
+  try {
+    const url = `${env.SUPABASE_URL}/realtime/v1/api/broadcast`;
+    const res = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        apikey: env.SUPABASE_ANON_KEY,
+        Authorization: `Bearer ${env.SUPABASE_SERVICE_ROLE_KEY}`,
+      },
+      body: JSON.stringify({
+        messages: [
+          {
+            topic: `vendor-inventory:${vendorId}`,
+            event: "inventory_change",
+            payload: { action, vendorId, item },
+          },
+        ],
+      }),
+    });
+
+    if (!res.ok) {
+      logger.warn({ vendorId, action, httpStatus: res.status }, "Broadcast vendor inventory failed");
+    }
+  } catch (err) {
+    logger.warn({ vendorId, action, err }, "Broadcast vendor inventory error");
+  }
+}
+
+/**
  * Broadcast a ride offer to a specific driver via the `driver:{driverId}` channel.
  * Uses the same Realtime REST broadcast endpoint.
  */

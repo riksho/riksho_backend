@@ -2,6 +2,7 @@ import type { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
 import { supabaseAdmin } from "../../config/supabase.js";
 import { dusmintAuthGuard } from "./dusmint.auth.guard.js";
 import { logger } from "../../common/logger.js";
+import { broadcastVendorInventory } from "../matching/broadcast.service.js";
 
 export async function dusmintOrdersRoutes(fastify: FastifyInstance) {
   // 1. Create New Order (Multi-Vendor Split + Riksho Fleet Bridge)
@@ -165,6 +166,49 @@ export async function dusmintOrdersRoutes(fastify: FastifyInstance) {
         }));
 
         await supabaseAdmin.from("order_items").insert(lineItemsToInsert);
+
+        // Decrement stock_kg for ordered items & broadcast live update
+        for (const ordered of vItems) {
+          try {
+            const { data: currentItem } = await supabaseAdmin
+              .from("items")
+              .select("id, vendor_id, stock_kg, stock_grams, in_stock, name_en, name_hi, unit, price, mrp, photo_url, category_id, categories(name_en)")
+              .eq("id", ordered.itemId)
+              .maybeSingle();
+
+            if (currentItem && typeof (currentItem as any).stock_kg === "number") {
+              const nextStockKg = Math.max(0, (currentItem as any).stock_kg - ordered.quantity);
+              const nextInStock = nextStockKg > 0 || ((currentItem as any).stock_grams ?? 0) > 0;
+              const { data: dec } = await supabaseAdmin
+                .from("items")
+                .update({ stock_kg: nextStockKg, in_stock: nextInStock })
+                .eq("id", ordered.itemId)
+                .select("*, categories(name_en, name_hi)")
+                .maybeSingle();
+
+              if (dec) {
+                void broadcastVendorInventory(vendorId, "updated", {
+                  id: dec.id,
+                  vendorId: dec.vendor_id,
+                  categoryId: dec.category_id || "cat-general",
+                  categoryName: (dec.categories as any)?.name_en || "General",
+                  nameEn: dec.name_en,
+                  nameHi: dec.name_hi,
+                  unit: dec.unit,
+                  stepQuantity: 1,
+                  pricePaise: Math.round(Number(dec.price) * 100),
+                  mrpPaise: dec.mrp ? Math.round(Number(dec.mrp) * 100) : undefined,
+                  photoUrl: dec.photo_url || undefined,
+                  isInStock: dec.in_stock !== false,
+                  stockKg: dec.stock_kg,
+                  stockGrams: dec.stock_grams ?? 0,
+                });
+              }
+            }
+          } catch {
+            // Non-blocking if stock_kg column isn't tracked on this item
+          }
+        }
       }
     }
 

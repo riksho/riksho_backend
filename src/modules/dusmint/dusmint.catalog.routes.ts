@@ -8,23 +8,27 @@ export async function dusmintCatalogRoutes(fastify: FastifyInstance) {
 
     const { data: items } = await supabaseAdmin
       .from("items")
-      .select("*")
+      .select("*, categories(name_en, name_hi)")
       .eq("vendor_id", vendorId)
-      .eq("in_stock", true);
+      .order("name_en", { ascending: true });
 
-    return (items || []).map((i) => ({
+    return (items || []).map((i: any) => ({
       id: i.id,
       vendorId: i.vendor_id,
-      categoryId: i.category_id,
+      categoryId: i.category_id || "cat-general",
+      categoryName: i.categories?.name_en || i.category || "Vegetables",
       nameEn: i.name_en,
       nameHi: i.name_hi,
       unit: i.unit,
       stepQuantity: 1,
       pricePaise: Math.round(Number(i.price) * 100),
+      mrpPaise: i.mrp ? Math.round(Number(i.mrp) * 100) : undefined,
       mandiBandMinPaise: i.band_min ? Math.round(Number(i.band_min) * 100) : undefined,
       mandiBandMaxPaise: i.band_max ? Math.round(Number(i.band_max) * 100) : undefined,
       photoUrl: i.photo_url || undefined,
-      isInStock: i.in_stock,
+      isInStock: i.in_stock !== false,
+      stockKg: i.stock_kg ?? undefined,
+      stockGrams: i.stock_grams ?? undefined,
     }));
   });
 

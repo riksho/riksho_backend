@@ -1,6 +1,7 @@
 import type { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
 import { supabaseAdmin } from "../../config/supabase.js";
 import { logger } from "../../common/logger.js";
+import { broadcastVendorInventory } from "../matching/broadcast.service.js";
 
 const VENDOR_PHOTO_BUCKET = "vendor-photos";
 
@@ -412,6 +413,24 @@ export async function dusmintVendorRoutes(fastify: FastifyInstance) {
     };
   });
 
+  const mapStockItem = (i: any, fallbackCategory?: string) => ({
+    id: i.id,
+    vendorId: i.vendor_id,
+    categoryId: i.category_id || "cat-general",
+    category: (i.categories as any)?.name_en || fallbackCategory || "General",
+    categoryName: (i.categories as any)?.name_en || fallbackCategory || "General",
+    nameEn: i.name_en,
+    nameHi: i.name_hi,
+    unit: i.unit,
+    stepQuantity: 1,
+    pricePaise: Math.round(Number(i.price) * 100),
+    mrpPaise: i.mrp ? Math.round(Number(i.mrp) * 100) : undefined,
+    isInStock: i.in_stock !== false,
+    photoUrl: i.photo_url || undefined,
+    stockKg: i.stock_kg ?? (i.in_stock ? 10 : 0),
+    stockGrams: i.stock_grams ?? 0,
+  });
+
   // 3. Get Vendor Stock
   fastify.get("/vendor/stock", async (request: FastifyRequest) => {
     const { vendorId } = request.query as { vendorId?: string };
@@ -420,26 +439,13 @@ export async function dusmintVendorRoutes(fastify: FastifyInstance) {
       return [];
     }
 
-    const query = supabaseAdmin
+    const { data: items } = await supabaseAdmin
       .from("items")
       .select("*, categories(name_en, name_hi)")
-      .eq("vendor_id", vendorId);
+      .eq("vendor_id", vendorId)
+      .order("name_en", { ascending: true });
 
-    const { data: items } = await query;
-
-    return (items || []).map((i: any) => ({
-      id: i.id,
-      nameEn: i.name_en,
-      nameHi: i.name_hi,
-      category: i.categories?.name_en || "General",
-      unit: i.unit,
-      pricePaise: Math.round(Number(i.price) * 100),
-      mrpPaise: i.mrp ? Math.round(Number(i.mrp) * 100) : undefined,
-      isInStock: i.in_stock,
-      photoUrl: i.photo_url || undefined,
-      stockKg: i.stock_kg ?? (i.in_stock ? 10 : 0),
-      stockGrams: i.stock_grams ?? 0,
-    }));
+    return (items || []).map((i: any) => mapStockItem(i));
   });
 
   // 3.5 Add New Item to Vendor Stock
@@ -474,6 +480,10 @@ export async function dusmintVendorRoutes(fastify: FastifyInstance) {
       if (cat?.id) categoryId = cat.id;
     }
 
+    const resolvedPhoto = body.photoUrl
+      ? await uploadVendorPhotoIfBase64(`${body.vendorId}-item`, body.photoUrl)
+      : null;
+
     const insertPayload: any = {
       vendor_id: body.vendorId,
       category_id: categoryId,
@@ -483,43 +493,56 @@ export async function dusmintVendorRoutes(fastify: FastifyInstance) {
       price: Number(((body.pricePaise || 0) / 100).toFixed(2)),
       mrp: body.mrpPaise ? Number((body.mrpPaise / 100).toFixed(2)) : null,
       in_stock: body.isInStock ?? true,
-      photo_url: body.photoUrl || null,
+      photo_url: resolvedPhoto,
+      stock_kg: body.stockKg ?? 10,
+      stock_grams: body.stockGrams ?? 0,
     };
 
-    const { data: inserted, error } = await supabaseAdmin
+    let { data: inserted, error } = await supabaseAdmin
       .from("items")
       .insert(insertPayload)
       .select("*, categories(name_en, name_hi)")
       .single();
 
+    // Fallback if stock_kg/stock_grams columns aren't in items table yet
+    if (error) {
+      delete insertPayload.stock_kg;
+      delete insertPayload.stock_grams;
+      const retry = await supabaseAdmin
+        .from("items")
+        .insert(insertPayload)
+        .select("*, categories(name_en, name_hi)")
+        .single();
+      inserted = retry.data;
+      error = retry.error;
+    }
+
     if (error || !inserted) {
       return reply.status(500).send({ success: false, message: error?.message || "Failed to add stock item" });
     }
 
+    const mapped = {
+      ...mapStockItem(inserted, body.category),
+      stockKg: inserted.stock_kg ?? body.stockKg ?? 10,
+      stockGrams: inserted.stock_grams ?? body.stockGrams ?? 0,
+    };
+
+    void broadcastVendorInventory(body.vendorId, "added", mapped);
+
     return {
       success: true,
-      item: {
-        id: inserted.id,
-        nameEn: inserted.name_en,
-        nameHi: inserted.name_hi,
-        category: (inserted.categories as any)?.name_en || body.category || "General",
-        unit: inserted.unit,
-        pricePaise: Math.round(Number(inserted.price) * 100),
-        mrpPaise: inserted.mrp ? Math.round(Number(inserted.mrp) * 100) : undefined,
-        isInStock: inserted.in_stock,
-        photoUrl: inserted.photo_url || undefined,
-        stockKg: body.stockKg ?? 10,
-        stockGrams: body.stockGrams ?? 0,
-      },
+      item: mapped,
     };
   });
 
   // 4. Update Stock or Price
   fastify.put("/vendor/stock/:itemId", async (request: FastifyRequest, reply: FastifyReply) => {
     const { itemId } = request.params as { itemId: string };
-    const { inStock, price, stockKg, stockGrams } = request.body as {
+    const { inStock, price, pricePaise, mrpPaise, stockKg, stockGrams } = request.body as {
       inStock?: boolean;
       price?: number;
+      pricePaise?: number;
+      mrpPaise?: number;
       stockKg?: number;
       stockGrams?: number;
     };
@@ -527,6 +550,8 @@ export async function dusmintVendorRoutes(fastify: FastifyInstance) {
     const updatePayload: any = {};
     if (typeof inStock === "boolean") updatePayload.in_stock = inStock;
     if (typeof price === "number") updatePayload.price = price;
+    if (typeof pricePaise === "number") updatePayload.price = Number((pricePaise / 100).toFixed(2));
+    if (typeof mrpPaise === "number") updatePayload.mrp = Number((mrpPaise / 100).toFixed(2));
     if (typeof stockKg === "number") updatePayload.stock_kg = stockKg;
     if (typeof stockGrams === "number") updatePayload.stock_grams = stockGrams;
 
@@ -534,7 +559,7 @@ export async function dusmintVendorRoutes(fastify: FastifyInstance) {
       .from("items")
       .update(updatePayload)
       .eq("id", itemId)
-      .select()
+      .select("*, categories(name_en, name_hi)")
       .single();
 
     // Fallback if stock_kg/stock_grams columns aren't in items table yet
@@ -545,20 +570,46 @@ export async function dusmintVendorRoutes(fastify: FastifyInstance) {
         .from("items")
         .update(updatePayload)
         .eq("id", itemId)
-        .select()
+        .select("*, categories(name_en, name_hi)")
         .single();
       updated = retry.data;
       error = retry.error;
     }
 
-    if (error) {
-      return reply.status(500).send({ message: "Failed to update item", error: error.message });
+    if (error || !updated) {
+      return reply.status(500).send({ message: "Failed to update item", error: error?.message });
+    }
+
+    const mapped = mapStockItem(updated);
+    if (updated.vendor_id) {
+      void broadcastVendorInventory(updated.vendor_id, "updated", mapped);
     }
 
     return {
       success: true,
-      item: updated,
+      item: mapped,
     };
+  });
+
+  // 4.5 Delete Vendor Stock Item
+  fastify.delete("/vendor/stock/:itemId", async (request: FastifyRequest, reply: FastifyReply) => {
+    const { itemId } = request.params as { itemId: string };
+    const { data: deleted, error } = await supabaseAdmin
+      .from("items")
+      .delete()
+      .eq("id", itemId)
+      .select("id, vendor_id")
+      .maybeSingle();
+
+    if (error) {
+      return reply.status(500).send({ success: false, message: error.message });
+    }
+
+    if (deleted?.vendor_id) {
+      void broadcastVendorInventory(deleted.vendor_id, "deleted", { id: itemId });
+    }
+
+    return { success: true, id: itemId };
   });
 
   // 5. Vendor Earnings & Settlements
