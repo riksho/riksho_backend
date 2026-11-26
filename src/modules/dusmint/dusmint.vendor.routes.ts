@@ -53,7 +53,10 @@ async function resolveShopPhotoUrls(keyPrefix: string, urls?: string[]): Promise
 
 export async function dusmintVendorRoutes(fastify: FastifyInstance) {
   // 0.5 Vendor Onboarding (4 Checklist Items: Owner, Shop & Address, Photo, UPI)
-  fastify.post("/vendor/onboarding", async (request: FastifyRequest, reply: FastifyReply) => {
+  fastify.post(
+    "/vendor/onboarding",
+    { bodyLimit: 15 * 1024 * 1024 },
+    async (request: FastifyRequest, reply: FastifyReply) => {
     const body = request.body as {
       ownerName: string;
       ownerPhone: string;
@@ -257,7 +260,10 @@ export async function dusmintVendorRoutes(fastify: FastifyInstance) {
   });
 
   // 0.2 Update Vendor Profile Details
-  fastify.patch("/vendor/profile", async (request: FastifyRequest, reply: FastifyReply) => {
+  fastify.patch(
+    "/vendor/profile",
+    { bodyLimit: 15 * 1024 * 1024 },
+    async (request: FastifyRequest, reply: FastifyReply) => {
     const { vendorId, shopName, ownerName, bankOrUpi, category, address, shopPhotoUrls } = request.body as {
       vendorId: string;
       shopName?: string;
