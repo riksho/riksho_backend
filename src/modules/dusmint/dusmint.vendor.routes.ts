@@ -448,6 +448,44 @@ export async function dusmintVendorRoutes(fastify: FastifyInstance) {
     return (items || []).map((i: any) => mapStockItem(i));
   });
 
+  const resolveCategoryId = async (categoryName?: string): Promise<string> => {
+    const raw = (categoryName || "Vegetables").trim();
+    const lower = raw.toLowerCase();
+    const slugCandidate = lower === "meat" ? "meat_poultry" : lower.replace(/[^a-z0-9]+/g, "_");
+
+    const { data: exactCat } = await supabaseAdmin
+      .from("categories")
+      .select("id")
+      .or(`slug.eq.${slugCandidate},name_en.ilike.%${raw}%`)
+      .limit(1)
+      .maybeSingle();
+    if (exactCat?.id) return exactCat.id;
+
+    const { data: anyCat } = await supabaseAdmin
+      .from("categories")
+      .select("id")
+      .limit(1)
+      .maybeSingle();
+    if (anyCat?.id) return anyCat.id;
+
+    const { data: createdCat, error: catErr } = await supabaseAdmin
+      .from("categories")
+      .insert({
+        slug: slugCandidate || "vegetables",
+        name_en: raw || "Vegetables",
+        name_hi: raw || "सब्ज़ियाँ",
+        sort_order: 1,
+        is_active: true,
+      })
+      .select("id")
+      .single();
+
+    if (catErr || !createdCat?.id) {
+      throw new Error(catErr?.message || "Failed to resolve category_id");
+    }
+    return createdCat.id;
+  };
+
   // 3.5 Add New Item to Vendor Stock
   fastify.post("/vendor/stock", async (request: FastifyRequest, reply: FastifyReply) => {
     const body = request.body as {
@@ -468,17 +506,7 @@ export async function dusmintVendorRoutes(fastify: FastifyInstance) {
       return reply.status(400).send({ success: false, message: "vendorId and nameEn are required" });
     }
 
-    // Resolve category_id if matching category exists
-    let categoryId: string | null = null;
-    if (body.category) {
-      const { data: cat } = await supabaseAdmin
-        .from("categories")
-        .select("id")
-        .ilike("name_en", `%${body.category}%`)
-        .limit(1)
-        .maybeSingle();
-      if (cat?.id) categoryId = cat.id;
-    }
+    const categoryId = await resolveCategoryId(body.category);
 
     const resolvedPhoto = body.photoUrl
       ? await uploadVendorPhotoIfBase64(`${body.vendorId}-item`, body.photoUrl)
