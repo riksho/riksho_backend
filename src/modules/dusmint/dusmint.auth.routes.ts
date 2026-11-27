@@ -57,6 +57,33 @@ async function resolveOrCreateAuthUserId(
     logger.warn({ err, cleanPhone }, "vendors table check failed");
   }
 
+  // 3. Check existing Riksho drivers table
+  try {
+    const { data: d } = await supabaseAdmin
+      .from("drivers")
+      .select("id")
+      .ilike("phone", `%${cleanPhone}%`)
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (d?.id) return d.id;
+  } catch (err) {
+    logger.warn({ err, cleanPhone }, "drivers table check failed in dusmint");
+  }
+
+  // 4. Check existing Riksho users table
+  try {
+    const { data: u } = await supabaseAdmin
+      .from("users")
+      .select("id")
+      .ilike("phone", `%${cleanPhone}%`)
+      .limit(1)
+      .maybeSingle();
+    if (u?.id) return u.id;
+  } catch (err) {
+    logger.warn({ err, cleanPhone }, "users table check failed in dusmint");
+  }
+
   // 5. Try paginated search in Supabase Auth via listUsers (up to 1000 users)
   try {
     for (let page = 1; page <= 10; page++) {

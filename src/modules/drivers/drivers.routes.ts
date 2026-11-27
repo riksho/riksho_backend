@@ -1,4 +1,8 @@
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, FastifyRequest } from "fastify";
+
+function getEffectiveDriverId(request: FastifyRequest): string {
+  return (request.user as any)?.driverId || request.user!.id;
+}
 import { authGuard } from "../../common/auth.guard.js";
 import { requireRole } from "../../common/roles.guard.js";
 import { supabaseAdmin } from "../../config/supabase.js";
@@ -10,7 +14,7 @@ import { sendDataMessage } from "../notifications/fcm.service.js";
 export async function driversRoutes(app: FastifyInstance) {
   // POST /drivers/online — Go online (drivers only, subscription gated)
   app.post("/drivers/online", { preHandler: [authGuard, requireRole("driver")] }, async (request, reply) => {
-    const driverId = request.user!.id;
+    const driverId = getEffectiveDriverId(request);
 
     // Check active driver subscription
     const { data: activeSub } = await supabaseAdmin
@@ -44,7 +48,7 @@ export async function driversRoutes(app: FastifyInstance) {
 
   // POST /drivers/offline — Go offline (drivers only)
   app.post("/drivers/offline", { preHandler: [authGuard, requireRole("driver")] }, async (request, reply) => {
-    const driverId = request.user!.id;
+    const driverId = getEffectiveDriverId(request);
 
     const { error } = await supabaseAdmin
       .from("drivers")
@@ -66,7 +70,7 @@ export async function driversRoutes(app: FastifyInstance) {
 
   // POST /drivers/location — Update current location (drivers only, Zod-validated)
   app.post("/drivers/location", { preHandler: [authGuard, requireRole("driver")] }, async (request, reply) => {
-    const driverId = request.user!.id;
+    const driverId = getEffectiveDriverId(request);
     const { lat, lng } = DriverLocationSchema.parse(request.body);
 
     const { error } = await supabaseAdmin
@@ -90,7 +94,7 @@ export async function driversRoutes(app: FastifyInstance) {
 
   // GET /drivers/earnings — Earnings summary (drivers only)
   app.get("/drivers/earnings", { preHandler: [authGuard, requireRole("driver")] }, async (request, reply) => {
-    const driverId = request.user!.id;
+    const driverId = getEffectiveDriverId(request);
     const { range } = request.query as { range?: string };
 
     let query = supabaseAdmin
@@ -140,15 +144,37 @@ export async function driversRoutes(app: FastifyInstance) {
 
   // GET /drivers/profile — Get driver profile (drivers only)
   app.get("/drivers/profile", { preHandler: [authGuard, requireRole("driver")] }, async (request, reply) => {
-    const driverId = request.user!.id;
+    let driverId = getEffectiveDriverId(request);
+    const phone = request.user?.phone;
+    const cleanPhone = phone ? phone.replace(/\D/g, "").slice(-10) : "";
 
-    const { data, error } = await supabaseAdmin
+    let { data, error } = await supabaseAdmin
       .from("drivers")
       .select("*, vehicles!vehicles_driver_id_fkey(*), driver_documents(*)")
       .eq("id", driverId)
-      .single();
+      .maybeSingle();
 
-    if (error) {
+    // Fallback: If not found by ID, look up by phone!
+    if (!data && cleanPhone.length >= 10) {
+      const { data: driverByPhone } = await supabaseAdmin
+        .from("drivers")
+        .select("*, vehicles!vehicles_driver_id_fkey(*), driver_documents(*)")
+        .ilike("phone", `%${cleanPhone}%`)
+        .order("created_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      if (driverByPhone) {
+        data = driverByPhone;
+        driverId = driverByPhone.id;
+        if (request.user) {
+          (request.user as any).driverId = driverByPhone.id;
+        }
+        error = null;
+      }
+    }
+
+    if (error || !data) {
       return reply.status(404).send({ error: "Driver profile not found" });
     }
 
@@ -179,7 +205,7 @@ export async function driversRoutes(app: FastifyInstance) {
   // POST /drivers/register — Register as a driver (onboarding)
   // No role guard — any authenticated user can register as a driver
   app.post("/drivers/register", { preHandler: [authGuard] }, async (request, reply) => {
-    const driverId = request.user!.id;
+    const driverId = getEffectiveDriverId(request);
     const body = DriverRegisterSchema.parse(request.body);
 
     // Create driver profile (verification_status = pending by default from migration)
@@ -236,7 +262,7 @@ export async function driversRoutes(app: FastifyInstance) {
 
   // POST /drivers/documents — Upload KYC document
   app.post("/drivers/documents", { preHandler: [authGuard] }, async (request, reply) => {
-    const driverId = request.user!.id;
+    const driverId = getEffectiveDriverId(request);
     const body = DriverDocumentSchema.parse(request.body);
 
     const { error } = await supabaseAdmin.from("driver_documents").upsert(
@@ -259,23 +285,47 @@ export async function driversRoutes(app: FastifyInstance) {
 
   // GET /drivers/documents — Get driver documents
   app.get("/drivers/documents", { preHandler: [authGuard] }, async (request, reply) => {
-    const driverId = request.user!.id;
+    let driverId = getEffectiveDriverId(request);
+    const phone = request.user?.phone;
+    const cleanPhone = phone ? phone.replace(/\D/g, "").slice(-10) : "";
 
-    const { data, error } = await supabaseAdmin
+    let { data, error } = await supabaseAdmin
       .from("driver_documents")
       .select("*")
       .eq("driver_id", driverId);
+
+    // If no documents found by driverId and clean phone exists, check by driver phone
+    if ((!data || data.length === 0) && cleanPhone.length >= 10) {
+      const { data: driverRow } = await supabaseAdmin
+        .from("drivers")
+        .select("id")
+        .ilike("phone", `%${cleanPhone}%`)
+        .order("created_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      if (driverRow?.id && driverRow.id !== driverId) {
+        const { data: fallbackDocs } = await supabaseAdmin
+          .from("driver_documents")
+          .select("*")
+          .eq("driver_id", driverRow.id);
+        if (fallbackDocs && fallbackDocs.length > 0) {
+          data = fallbackDocs;
+          error = null;
+        }
+      }
+    }
 
     if (error) {
       return reply.status(500).send({ error: "Failed to fetch documents" });
     }
 
-    return reply.send(await withSignedUrls(data));
+    return reply.send(await withSignedUrls(data || []));
   });
 
   // GET /drivers/trips — Paginated completed rides history
   app.get("/drivers/trips", { preHandler: [authGuard, requireRole("driver")] }, async (request, reply) => {
-    const driverId = request.user!.id;
+    const driverId = getEffectiveDriverId(request);
     const { limit = "50", cursor, range } = request.query as { limit?: string; cursor?: string; range?: string };
 
     let query = supabaseAdmin
@@ -320,7 +370,7 @@ export async function driversRoutes(app: FastifyInstance) {
 
   // GET /drivers/payouts — Driver payout history and pending balance
   app.get("/drivers/payouts", { preHandler: [authGuard, requireRole("driver")] }, async (request, reply) => {
-    const driverId = request.user!.id;
+    const driverId = getEffectiveDriverId(request);
 
     // Get payouts
     const { data: payouts, error: payoutsError } = await supabaseAdmin
@@ -352,7 +402,7 @@ export async function driversRoutes(app: FastifyInstance) {
 
   // POST /drivers/withdraw — Request a withdrawal
   app.post("/drivers/withdraw", { preHandler: [authGuard, requireRole("driver")] }, async (request, reply) => {
-    const driverId = request.user!.id;
+    const driverId = getEffectiveDriverId(request);
     const { amount } = request.body as { amount: number };
 
     if (!amount || amount < 500) {
@@ -398,7 +448,7 @@ export async function driversRoutes(app: FastifyInstance) {
 
   // PUT /drivers/profile — Edit driver profile
   app.put("/drivers/profile", { preHandler: [authGuard, requireRole("driver")] }, async (request, reply) => {
-    const driverId = request.user!.id;
+    const driverId = getEffectiveDriverId(request);
     const { name, vehicle_model, vehicle_plate, vehicle_type } = request.body as any;
 
     if (name && typeof name === "string") {
@@ -433,7 +483,7 @@ export async function driversRoutes(app: FastifyInstance) {
 
   // GET /drivers/schedule — Assigned upcoming fleet/scheduled jobs
   app.get("/drivers/schedule", { preHandler: [authGuard, requireRole("driver")] }, async (request, reply) => {
-    const driverId = request.user!.id;
+    const driverId = getEffectiveDriverId(request);
 
     const { data, error } = await supabaseAdmin
       .from("scheduled_jobs")
@@ -452,7 +502,7 @@ export async function driversRoutes(app: FastifyInstance) {
 
   // GET /drivers/sessions/active — Check other active device sessions for this driver
   app.get("/drivers/sessions/active", { preHandler: [authGuard] }, async (request, reply) => {
-    const driverId = request.user!.id;
+    const driverId = getEffectiveDriverId(request);
     const { current_token } = (request.query || {}) as { current_token?: string };
 
     const { data: tokens, error } = await supabaseAdmin
@@ -477,7 +527,7 @@ export async function driversRoutes(app: FastifyInstance) {
 
   // POST /drivers/sessions/terminate-others — Force-logout other active devices via FCM data push
   app.post("/drivers/sessions/terminate-others", { preHandler: [authGuard] }, async (request, reply) => {
-    const driverId = request.user!.id;
+    const driverId = getEffectiveDriverId(request);
     const { current_token } = (request.body || {}) as { current_token?: string };
 
     // 1. Find other active push tokens for this driver
