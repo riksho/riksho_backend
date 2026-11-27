@@ -128,6 +128,44 @@ app.route({
   },
 });
 
+// --- App Version & Remote Force Update Gate ---
+app.get("/app/version", async (request, reply) => {
+  const { app: targetApp } = (request.query || {}) as { app?: string };
+  const isPartner =
+    targetApp === "partner" ||
+    targetApp === "riksho_partner" ||
+    targetApp === "driver" ||
+    targetApp === "buddy" ||
+    targetApp === "com.riksho.buddy";
+
+  if (isPartner) {
+    return reply.status(200).send({
+      app: "partner",
+      package_name: "com.riksho.buddy",
+      min_version_code: Number(process.env.PARTNER_MIN_VERSION_CODE || 10),
+      latest_version_code: Number(process.env.PARTNER_LATEST_VERSION_CODE || 11),
+      force_update: process.env.PARTNER_FORCE_UPDATE === "true",
+      title: "Update Required",
+      message: "A new version of Riksho Buddy is available with important improvements. Please update from Google Play Store to continue receiving rides.",
+      store_url: "market://details?id=com.riksho.buddy",
+      web_url: "https://play.google.com/store/apps/details?id=com.riksho.buddy",
+    });
+  }
+
+  // Customer app default
+  return reply.status(200).send({
+    app: "customer",
+    package_name: "com.riksho.customer",
+    min_version_code: Number(process.env.CUSTOMER_MIN_VERSION_CODE || 8),
+    latest_version_code: Number(process.env.CUSTOMER_LATEST_VERSION_CODE || 9),
+    force_update: process.env.CUSTOMER_FORCE_UPDATE === "true",
+    title: "Update Required",
+    message: "A new version of Riksho is available with important improvements. Please update from Google Play Store to continue using Riksho.",
+    store_url: "market://details?id=com.riksho.customer",
+    web_url: "https://play.google.com/store/apps/details?id=com.riksho.customer",
+  });
+});
+
 // --- Register route modules ---
 await app.register(authRoutes);
 await app.register(driversRoutes);
