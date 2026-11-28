@@ -336,8 +336,8 @@ export async function promotersRoutes(app: FastifyInstance) {
       .maybeSingle();
 
     const rawDriverName = driverUser?.name || "Riksho Partner";
-    const driverName = isTest && !rawDriverName.startsWith("[TEST]")
-      ? `[TEST] ${rawDriverName}`
+    const driverName = isTest && !rawDriverName.startsWith("[LATE]") && !rawDriverName.startsWith("[TEST]")
+      ? `[LATE] ${rawDriverName}`
       : rawDriverName;
     const driverPhone = driverUser?.phone || "Registered Driver";
 
