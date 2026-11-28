@@ -346,12 +346,16 @@ export async function promotersRoutes(app: FastifyInstance) {
       .from("promoter_referrals")
       .select("id, promoter_id, created_at")
       .eq("driver_id", cleanDriverId)
-      .single();
+      .maybeSingle();
 
     if (existingReferral) {
+      const isLinkedByYou = existingReferral.promoter_id === userId;
       return reply.status(409).send({
-        error: "DRIVER_ALREADY_LINKED",
-        message: `This driver has already been recruited and verified previously on ${new Date(existingReferral.created_at).toLocaleDateString()}.`,
+        error: isLinkedByYou ? "ALREADY_LINKED_BY_YOU" : "DRIVER_ALREADY_LINKED",
+        already_linked_by_you: isLinkedByYou,
+        message: isLinkedByYou
+          ? `You have already recruited this driver on ${new Date(existingReferral.created_at).toLocaleDateString()}.`
+          : `This driver is already registered under another promoter.`,
       });
     }
 
